@@ -934,10 +934,11 @@ pub struct CompleteClaudeOauth {
 /// carries only the opaque attempt id that names it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct DevinOauthStart {
-    /// Names the verifier and `state` the completion must be redeemed
-    /// against.
+    /// Names the verifier the completion must be redeemed against.
     pub attempt_id: DevinOauthAttemptId,
     /// Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open.
+    /// It is the CLI's manual flow, so after sign-in the page shows the
+    /// code rather than redirecting anywhere.
     pub authorize_url: String,
 }
 
@@ -946,9 +947,8 @@ pub struct DevinOauthStart {
 pub struct CompleteDevinOauth {
     /// The attempt this code belongs to, from [`DevinOauthStart`].
     pub attempt_id: DevinOauthAttemptId,
-    /// The URL Devin's redirect left in the address bar —
-    /// `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code
-    /// alone, for a user who copied only the parameter out of it.
+    /// The authorization code Devin's page shows after sign-in, as the
+    /// user copied it.
     pub code: String,
 }
 

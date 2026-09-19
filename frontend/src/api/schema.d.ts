@@ -3422,9 +3422,8 @@ export interface components {
             /** @description The attempt this code belongs to, from [`DevinOauthStart`]. */
             attempt_id: components["schemas"]["Uuid"];
             /**
-             * @description The URL Devin's redirect left in the address bar —
-             *     `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code
-             *     alone, for a user who copied only the parameter out of it.
+             * @description The authorization code Devin's page shows after sign-in, as the
+             *     user copied it.
              */
             code: string;
         };
@@ -3982,12 +3981,13 @@ export interface components {
          *     carries only the opaque attempt id that names it.
          */
         DevinOauthStart: {
-            /**
-             * @description Names the verifier and `state` the completion must be redeemed
-             *     against.
-             */
+            /** @description Names the verifier the completion must be redeemed against. */
             attempt_id: components["schemas"]["Uuid"];
-            /** @description Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open. */
+            /**
+             * @description Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open.
+             *     It is the CLI's manual flow, so after sign-in the page shows the
+             *     code rather than redirecting anywhere.
+             */
             authorize_url: string;
         };
         /** @description Which checkout a `diff` asks about. */
@@ -7685,9 +7685,8 @@ export interface operations {
                     /** @description The attempt this code belongs to, from [`DevinOauthStart`]. */
                     attempt_id: components["schemas"]["Uuid"];
                     /**
-                     * @description The URL Devin's redirect left in the address bar —
-                     *     `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code
-                     *     alone, for a user who copied only the parameter out of it.
+                     * @description The authorization code Devin's page shows after sign-in, as the
+                     *     user copied it.
                      */
                     code: string;
                 };
@@ -7762,12 +7761,13 @@ export interface operations {
                 };
                 content: {
                     "application/json": {
-                        /**
-                         * @description Names the verifier and `state` the completion must be redeemed
-                         *     against.
-                         */
+                        /** @description Names the verifier the completion must be redeemed against. */
                         attempt_id: components["schemas"]["Uuid"];
-                        /** @description Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open. */
+                        /**
+                         * @description Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open.
+                         *     It is the CLI's manual flow, so after sign-in the page shows the
+                         *     code rather than redirecting anywhere.
+                         */
                         authorize_url: string;
                     };
                 };

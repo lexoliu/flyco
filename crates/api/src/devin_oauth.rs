@@ -2,22 +2,22 @@
 //!
 //! Two routes, and between them the user's browser does the only thing it
 //! can do here: open Devin's authorize page and bring back the code the
-//! redirect carries. [`start`] mints the PKCE verifier and the `state`,
-//! keeps both in KV for ten minutes under an opaque attempt id, and hands
-//! back the URL. [`complete`] redeems what the user pasted and links the
-//! account.
+//! page shows. [`start`] mints the PKCE verifier, keeps it in KV for ten
+//! minutes under an opaque attempt id, and hands back the URL.
+//! [`complete`] redeems the code the user pasted and links the account.
 //!
 //! The verifier never reaches the browser. That is the whole point of PKCE
 //! here: the flow is a public client, so the code alone must not be enough
 //! to obtain a token, and the half that completes it stays in the control
 //! plane — bound, additionally, to the user who started the attempt, so one
-//! signed-in user cannot finish another's sign-in.
+//! signed-in user cannot finish another's sign-in. The same two facts tie
+//! a paste to its sign-in: a code copied into the wrong attempt meets the
+//! wrong verifier and Devin refuses the exchange.
 //!
-//! Nothing here is a flyco redirect: `redirect_uri` is a dead localhost
-//! address (see [`devin::REDIRECT_URI`]), because Devin's allowlist admits
-//! nothing else. The redirect is meant to fail to connect, the code stays
-//! in the address bar of the page that could not load, and the user pastes
-//! it back — the pasted URL is the transport.
+//! Nothing here is a redirect at all. Devin's allowlist admits only
+//! localhost redirect URIs, so flyco runs the CLI's port-free variant of
+//! the flow (see [`devin::authorize_url`]): the page shows the code, and
+//! the code is the transport.
 
 use flyco_core::{
     CompleteDevinOauth, CurrentUser, DevinOauthAttemptId, DevinOauthStart, HarnessAccountView,
@@ -30,7 +30,7 @@ use skyzen_services::{Db, Kv};
 
 use crate::config::ApiConfig;
 use crate::crypto::{pkce, random_token};
-use crate::devin::{self, DevinApi as _, DevinClient, PastedCode};
+use crate::devin::{self, DevinApi as _, DevinClient};
 use crate::error::ApiError;
 use crate::expiring;
 use crate::harness_accounts::{self, StoredCredential};
@@ -45,14 +45,12 @@ const ATTEMPT_KEY_PREFIX: &str = "auth:devin-oauth:";
 
 /// One sign-in in flight, as KV holds it.
 ///
-/// Secrets by construction: the verifier completes the grant and the state
-/// authenticates the paste, so this value is never returned to anybody.
+/// A secret by construction: the verifier completes the grant, so this
+/// value is never returned to anybody.
 #[derive(Serialize, Deserialize)]
 struct Attempt {
     /// Who started it. A code redeemed by anybody else is not this attempt.
     user: UserId,
-    /// The `state` published in the authorize URL.
-    state: String,
     /// The PKCE verifier whose challenge was published.
     verifier: String,
 }
@@ -82,7 +80,6 @@ pub async fn start(State(user): State<CurrentUser>, kv: Kv) -> Outcome<Json<Devi
 
 async fn begin(kv: &Kv, user: UserId) -> Result<DevinOauthStart, ApiError> {
     let pkce = pkce()?;
-    let state = random_token()?;
     let attempt_id = DevinOauthAttemptId::generate();
 
     expiring::put(
@@ -90,14 +87,15 @@ async fn begin(kv: &Kv, user: UserId) -> Result<DevinOauthStart, ApiError> {
         &attempt_key(attempt_id),
         &Attempt {
             user,
-            state: state.clone(),
             verifier: pkce.verifier,
         },
         ATTEMPT_TTL_SECONDS,
     )
     .await?;
 
-    let authorize_url = devin::authorize_url(&pkce.challenge, &state);
+    // The state is the nonce the CLI sends too; the page shows the bare
+    // code and never echoes it, so nothing is kept to compare it against.
+    let authorize_url = devin::authorize_url(&pkce.challenge, &random_token()?);
 
     tracing::debug!("issued a Devin authorize URL");
     Ok(DevinOauthStart {
@@ -144,32 +142,11 @@ async fn redeem(
         return Err(ApiError::DevinOauthAttemptExpired);
     }
 
-    let (code, pasted_state) = match devin::split_pasted_code(&request.code) {
-        PastedCode::Code { code, state } => (code, state),
-        // The consent was declined, or Devin refused the grant before any
-        // code was issued — the redirect still landed, carrying the
-        // refusal instead of a code.
-        PastedCode::Refused { error, description } => {
-            return Err(ApiError::DevinOauthRejected {
-                reason: match description {
-                    Some(description) => format!("{error}: {description}"),
-                    None => error.into_owned(),
-                },
-            });
-        }
-        PastedCode::Empty => {
-            return Err(ApiError::InvalidHarnessCredential(
-                "the pasted code must not be empty",
-            ));
-        }
-    };
-    if let Some(pasted_state) = pasted_state
-        && *pasted_state != attempt.state
-    {
-        return Err(ApiError::DevinOauthStateMismatch);
-    }
+    let code = devin::pasted_code(&request.code).ok_or(ApiError::InvalidHarnessCredential(
+        "the pasted code must not be empty",
+    ))?;
 
-    let token = devin.redeem_grant(&code, &attempt.verifier).await?;
+    let token = devin.redeem_grant(code, &attempt.verifier).await?;
 
     // Spent: the code has been exchanged, so the attempt has done its job.
     // A concurrent second paste of the same code loses at Devin, not here,
@@ -204,7 +181,7 @@ mod tests {
     use skyzen_test::TestContext;
 
     use super::{CompleteDevinOauth, begin, redeem};
-    use crate::devin::{DevinClient, REDIRECT_URI};
+    use crate::devin::DevinClient;
     use crate::error::ApiError;
     use crate::testing::{DEVIN_CODE, TestDevin, migrate, seed_other_user, seed_user, test_config};
     use flyco_core::HarnessKind;
@@ -243,93 +220,6 @@ mod tests {
         assert!(
             matches!(again, Err(ApiError::DevinOauthAttemptExpired)),
             "a redeemed sign-in is spent: {again:?}"
-        );
-    }
-
-    /// The pasted redirect URL is read as a code and a `state` checked
-    /// against the attempt's — a paste from a different sign-in is a
-    /// mismatch, not Devin's refusal.
-    #[skyzen::test]
-    async fn a_pasted_url_carries_the_code_and_answers_for_its_state(
-        _ctx: TestContext,
-        kv: Kv,
-        db: Db,
-    ) {
-        migrate(&db).await;
-        let user = seed_user(&db).await;
-        let config = test_config();
-        let devin = DevinClient::Fake(TestDevin);
-        let started = begin(&kv, user.id).await.expect("a sign-in starts");
-        let state = started
-            .authorize_url
-            .split("state=")
-            .nth(1)
-            .expect("the authorize URL carries the state")
-            .split('&')
-            .next()
-            .expect("the state parameter");
-
-        let url = format!("{REDIRECT_URI}?code={DEVIN_CODE}&state=somebody-elses");
-        let mismatched = redeem(
-            &config,
-            &devin,
-            &kv,
-            &db,
-            user.id,
-            CompleteDevinOauth {
-                attempt_id: started.attempt_id,
-                code: url,
-            },
-        )
-        .await;
-        assert!(
-            matches!(mismatched, Err(ApiError::DevinOauthStateMismatch)),
-            "a foreign state is a mismatch: {mismatched:?}"
-        );
-
-        let url = format!("{REDIRECT_URI}?code={DEVIN_CODE}&state={state}");
-        let linked = redeem(
-            &config,
-            &devin,
-            &kv,
-            &db,
-            user.id,
-            CompleteDevinOauth {
-                attempt_id: started.attempt_id,
-                code: url,
-            },
-        )
-        .await
-        .expect("the attempt's own state redeems");
-        assert_eq!(linked.label, crate::testing::DEVIN_ACCOUNT_NAME);
-    }
-
-    /// A consent the user declined comes back in the same redirect, as
-    /// `error` rather than `code`, and is Devin's refusal rather than a
-    /// malformed paste.
-    #[skyzen::test]
-    async fn a_declined_consent_is_the_refusal_devin_stated(_ctx: TestContext, kv: Kv, db: Db) {
-        migrate(&db).await;
-        let user = seed_user(&db).await;
-        let config = test_config();
-        let devin = DevinClient::Fake(TestDevin);
-        let started = begin(&kv, user.id).await.expect("a sign-in starts");
-
-        let refused = redeem(
-            &config,
-            &devin,
-            &kv,
-            &db,
-            user.id,
-            CompleteDevinOauth {
-                attempt_id: started.attempt_id,
-                code: format!("{REDIRECT_URI}?error=access_denied"),
-            },
-        )
-        .await;
-        assert!(
-            matches!(refused, Err(ApiError::DevinOauthRejected { .. })),
-            "a declined consent is a refusal, not an empty paste: {refused:?}"
         );
     }
 

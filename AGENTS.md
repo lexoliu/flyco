@@ -7,7 +7,10 @@ installed on their machine. Every user-facing flow must be completable from
 the PWA alone:
 
 - Account linking is paste-a-key or an OAuth/device-code page, never "run
-  `x login` locally and paste the result back".
+  `x login` locally and paste the result back". A vendor whose OAuth
+  client admits only localhost redirects gets its CLI's manual-code flow
+  (the page shows the code, the user pastes the code), never a dead
+  `127.0.0.1` redirect the user copies out of the browser's error page.
 - No flow may ask the user to execute a command in their own terminal and
   copy output into flyco.
 - Session inspection, approvals, diffs, files, env, terminal — all through

@@ -898,8 +898,7 @@ export async function pollCodexOauth(
  * Begins the Devin sign-in (docs/ux.md §8.1).
  *
  * The PKCE verifier stays in the control plane; what comes back is the URL
- * to open and the opaque attempt id the pasted redirect is redeemed
- * against.
+ * to open and the opaque attempt id the pasted code is redeemed against.
  */
 export function startDevinOauth(): Promise<
   JsonResponse<"flyco_api::devin_oauth::start", 200>
@@ -908,12 +907,8 @@ export function startDevinOauth(): Promise<
 }
 
 /**
- * Redeems what Devin's redirect left in the address bar, linking the
+ * Redeems the code Devin's page showed after sign-in, linking the
  * account.
- *
- * The field takes the whole address of the page that could not load —
- * `http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code;
- * the control plane reads either.
  */
 export function completeDevinOauth(
   input: JsonBody<"flyco_api::devin_oauth::complete">,
