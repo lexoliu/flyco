@@ -1100,6 +1100,7 @@ async fn settle_approval(
             &ControlToDaemon::ApprovalDecision {
                 id,
                 decision: request.decision,
+                payload: decided.payload.clone(),
             },
         )
         .await;

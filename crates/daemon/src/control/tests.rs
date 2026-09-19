@@ -919,6 +919,10 @@ async fn an_approval_decision_reaches_the_harness() {
     harness.command(ControlToDaemon::ApprovalDecision {
         id: harness.approval_id,
         decision: ApprovalDecision::Approved,
+        payload: ApprovalPayload::ToolUse {
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "ls" }),
+        },
     });
     assert_eq!(
         harness.next_call().await,
@@ -1396,11 +1400,117 @@ async fn a_decision_on_an_approval_the_harness_never_raised_is_not_fatal() {
     harness.command(ControlToDaemon::ApprovalDecision {
         id: ApprovalId::generate(),
         decision: ApprovalDecision::Approved,
+        payload: ApprovalPayload::MachineResizeLicenseBound {
+            machine_type: "Standard_NC4as_T4_v3".to_owned(),
+            minimum: flyco_core::machine::BillingMinimum::new(1, flyco_core::Usd::from_cents(60)),
+            reason: "the build needs a GPU".to_owned(),
+        },
     });
 
     // The session keeps working, which is what "not fatal" means here.
     harness.command(ControlToDaemon::Interrupt);
     assert_eq!(harness.next_call().await, Call::Interrupt);
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+/// The call the user approved died with the suspended machine (issue #355):
+/// the agent is told, and its re-run is answered without a second ask.
+#[tokio::test]
+async fn an_approval_decided_after_a_suspension_reaches_the_agent_and_answers_the_rerun() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    let payload = ApprovalPayload::ToolUse {
+        tool: "Bash".to_owned(),
+        input: serde_json::json!({ "command": "cargo test -p flyco-core" }),
+    };
+    harness.command(ControlToDaemon::ApprovalDecision {
+        id: ApprovalId::generate(),
+        decision: ApprovalDecision::Approved,
+        payload: payload.clone(),
+    });
+    let Call::UserMessage(notice) = harness.next_call().await else {
+        panic!("the agent is told what the user decided");
+    };
+    assert!(
+        notice.starts_with("[flyco approval notice]")
+            && notice.contains("approved")
+            && notice.contains("cargo test -p flyco-core"),
+        "the notice names the decision and the call: {notice}"
+    );
+
+    // The agent runs it again: answered on the machine, raised to nobody.
+    let native = ApprovalId::generate();
+    harness
+        .emit(SessionOutput::ApprovalRequest {
+            id: native,
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "cargo test -p flyco-core" }),
+            suggestions: None,
+        })
+        .await;
+    assert_eq!(
+        harness.next_call().await,
+        Call::Approval {
+            id: native,
+            allowed: true
+        }
+    );
+    assert!(
+        harness.approvals.try_recv().is_err(),
+        "an approved call is not raised over REST again"
+    );
+
+    // Once. The same call a second time is a new question for the user.
+    harness
+        .emit(SessionOutput::ApprovalRequest {
+            id: ApprovalId::generate(),
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "cargo test -p flyco-core" }),
+            suggestions: None,
+        })
+        .await;
+    assert_eq!(harness.approvals.recv().await, Some(payload));
+
+    harness.archive().await.expect("the run ended cleanly");
+}
+
+#[tokio::test]
+async fn a_denial_decided_after_a_suspension_reaches_the_agent_and_preapproves_nothing() {
+    let mut harness = Harness::start(AttachAnswer::Accept).await;
+    harness.handshake().await;
+
+    let payload = ApprovalPayload::ToolUse {
+        tool: "Bash".to_owned(),
+        input: serde_json::json!({ "command": "rm -rf target" }),
+    };
+    harness.command(ControlToDaemon::ApprovalDecision {
+        id: ApprovalId::generate(),
+        decision: ApprovalDecision::Denied,
+        payload: payload.clone(),
+    });
+    let Call::UserMessage(notice) = harness.next_call().await else {
+        panic!("the agent is told what the user decided");
+    };
+    assert!(
+        notice.starts_with("[flyco approval notice]") && notice.contains("denied"),
+        "{notice}"
+    );
+
+    harness
+        .emit(SessionOutput::ApprovalRequest {
+            id: ApprovalId::generate(),
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "rm -rf target" }),
+            suggestions: None,
+        })
+        .await;
+    assert_eq!(
+        harness.approvals.recv().await,
+        Some(payload),
+        "a denied call that is asked for again is the user's to decide again"
+    );
 
     harness.archive().await.expect("the run ended cleanly");
 }

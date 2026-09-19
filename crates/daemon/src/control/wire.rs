@@ -46,7 +46,7 @@ use core::time::Duration;
 use std::collections::{BTreeMap, VecDeque};
 
 use askama::Template as _;
-use flyco_core::wire::{DaemonCommand, DaemonFrames};
+use flyco_core::wire::{ApprovalPayload, DaemonCommand, DaemonFrames};
 use flyco_core::workdir::WorkdirRequest;
 use flyco_core::{
     ApprovalDecision, ApprovalId, BudgetSignal, ControlToDaemon, DaemonToControl, HarnessEvent,
@@ -62,7 +62,8 @@ use crate::control::rest::{CommandStream, ControlApi, ControlApiError, RelayTran
 use crate::git::{GitError, WorkingSet};
 use crate::harness::{HarnessSession, SessionOutput, ToolApproval};
 use crate::notice::{
-    BudgetRaised, MachineChanged, MachineLine, OpeningMessage, RepoAddedNotice, SessionStart,
+    ApprovalAfterSuspend, BudgetRaised, MachineChanged, MachineLine, OpeningMessage,
+    RepoAddedNotice, SessionStart,
 };
 use crate::shell::{Shell, ShellEvent, ShellRun, ShellUpdate};
 use crate::spot::{Disk, Notices, SpotNotice};
@@ -372,16 +373,42 @@ fn observation_in(event: &HarnessEvent) -> Option<HarnessObservation> {
 /// The room announces the REST-assigned id. The harness still keys its
 /// pending call on the id it minted, so the connection has to remember the
 /// pairing until the user decides.
-struct Outbound {
-    frame: DaemonToControl,
-    harness_approval: Option<ApprovalId>,
+/// What the collector hands the pump.
+enum Outbound {
+    /// A frame for the room, paired with the harness's own id when the
+    /// frame is an approval request the harness is waiting on.
+    Frame {
+        frame: DaemonToControl,
+        harness_approval: Option<ApprovalId>,
+    },
+    /// A tool call the user already approved — before a suspension took
+    /// the process that asked (issue #355) — answered on the machine and
+    /// never raised again.
+    Preapproved { harness_approval: ApprovalId },
+}
+
+/// Queues one item for the pump.
+fn enqueue(queue: &mpsc::Sender<Outbound>, outbound: Outbound) -> Result<(), WireError> {
+    queue.try_send(outbound).map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => WireError::QueueOverflow,
+        mpsc::error::TrySendError::Closed(_) => {
+            WireError::Harness("the relay connection stopped".to_owned())
+        }
+    })
 }
 
 async fn collect<A: ControlApi>(
     mut outputs: mpsc::Receiver<SessionOutput>,
     queue: mpsc::Sender<Outbound>,
     api: A,
+    mut standing: mpsc::UnboundedReceiver<ApprovalPayload>,
 ) -> Result<(), WireError> {
+    // Tool calls the user approved after the machine that asked was
+    // suspended. Each entry answers one identical request without raising
+    // it, which is what keeps the user from being asked twice for the
+    // same call; owned here because this is where a request becomes a
+    // raise, and fed by the pump, which is where decisions arrive.
+    let mut preapproved: Vec<ApprovalPayload> = Vec::new();
     while let Some(output) = outputs.recv().await {
         let (frame, harness_approval) = match output {
             SessionOutput::Started { session_id } => {
@@ -450,7 +477,21 @@ async fn collect<A: ControlApi>(
                 input,
                 ..
             } => {
-                let payload = flyco_core::wire::ApprovalPayload::ToolUse { tool, input };
+                let payload = ApprovalPayload::ToolUse { tool, input };
+                while let Ok(granted) = standing.try_recv() {
+                    preapproved.push(granted);
+                }
+                if let Some(at) = preapproved.iter().position(|granted| *granted == payload) {
+                    preapproved.swap_remove(at);
+                    tracing::info!("answering a tool call the user approved before the suspension");
+                    enqueue(
+                        &queue,
+                        Outbound::Preapproved {
+                            harness_approval: harness_id,
+                        },
+                    )?;
+                    continue;
+                }
                 let id = api.raise_approval(payload.clone()).await?;
                 (
                     DaemonToControl::ApprovalRequest { id, payload },
@@ -475,17 +516,13 @@ async fn collect<A: ControlApi>(
             }
         };
 
-        queue
-            .try_send(Outbound {
+        enqueue(
+            &queue,
+            Outbound::Frame {
                 frame,
                 harness_approval,
-            })
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => WireError::QueueOverflow,
-                mpsc::error::TrySendError::Closed(_) => {
-                    WireError::Harness("the relay connection stopped".to_owned())
-                }
-            })?;
+            },
+        )?;
     }
     Ok(())
 }
@@ -644,6 +681,9 @@ struct Connection<S, T, A, W, D, H, X> {
     trees: BTreeMap<Option<String>, Tree>,
     /// REST-assigned approval id → harness-native id.
     approvals: BTreeMap<ApprovalId, ApprovalId>,
+    /// Where an approval the user granted after a suspension goes: to the
+    /// collector, which answers the agent's next identical request itself.
+    standing: mpsc::UnboundedSender<ApprovalPayload>,
     /// The machine notice waiting to ride on the session's first message.
     ///
     /// Taken once. Everything after the first message is a conversation the
@@ -1074,22 +1114,38 @@ impl<
             return Ok(Some(Ended::HarnessStopped));
         };
 
-        if let Some(harness_id) = outbound.harness_approval {
-            let DaemonToControl::ApprovalRequest { id, .. } = &outbound.frame else {
+        let (frame, harness_approval) = match outbound {
+            Outbound::Frame {
+                frame,
+                harness_approval,
+            } => (frame, harness_approval),
+            Outbound::Preapproved { harness_approval } => {
+                self.session
+                    .decide_approval(ToolApproval::Allow {
+                        id: harness_approval,
+                        updated_input: None,
+                    })
+                    .await
+                    .map_err(harness)?;
+                return Ok(None);
+            }
+        };
+        if let Some(harness_id) = harness_approval {
+            let DaemonToControl::ApprovalRequest { id, .. } = &frame else {
                 return Err(WireError::Harness(
                     "an approval pairing was attached to a non-approval frame".to_owned(),
                 ));
             };
             self.approvals.insert(*id, harness_id);
         }
-        self.remember(&outbound.frame);
+        self.remember(&frame);
         let completed_dirty = matches!(
-            &outbound.frame,
+            &frame,
             DaemonToControl::Harness {
                 event: HarnessEvent::TurnCompleted { .. },
             }
         );
-        pending.push_back(outbound.frame);
+        pending.push_back(frame);
         if completed_dirty {
             self.nudge_if_dirty().await?;
         }
@@ -1251,8 +1307,13 @@ impl<
         applied: u64,
     ) {
         while let Ok(outbound) = queue.try_recv() {
-            self.remember(&outbound.frame);
-            pending.push_back(outbound.frame);
+            // A reclamation is not the moment to run a tool: an approved
+            // call left unanswered here is asked again on the next machine.
+            let Outbound::Frame { frame, .. } = outbound else {
+                continue;
+            };
+            self.remember(&frame);
+            pending.push_back(frame);
         }
         if !self.flush(attach, pending, applied).await {
             tracing::warn!("the last frame batch did not reach the room before reclamation");
@@ -1439,22 +1500,18 @@ impl<
                 if self.refuse_while_paused("the harness TUI") {
                     return Ok(Ended::Disconnected);
                 }
-                match self.tui.command(resume) {
-                    Ok(command) => self.terminal.launch_harness(command)?,
-                    // A launch that cannot be built — the claude binary
-                    // missing from the sidecar tree — is a line in the
-                    // terminal, where a failed `claude` would have printed.
-                    Err(error) => self.terminal.print(&format!("\r\nflycod: {error}\r\n"))?,
-                }
+                self.launch_harness_tui(resume)?;
             }
             // A size is a fact about the pane, not work; a paused session's
             // shell may still be looked at.
             ControlToDaemon::TerminalResize { cols, rows } => {
                 self.terminal.resize(cols, rows)?;
             }
-            ControlToDaemon::ApprovalDecision { id, decision } => {
-                self.decide_approval(id, decision).await?;
-            }
+            ControlToDaemon::ApprovalDecision {
+                id,
+                decision,
+                payload,
+            } => self.decide_approval(id, decision, payload).await?,
             ControlToDaemon::Budget { signal } => self.budget(signal).await?,
             ControlToDaemon::BudgetRaised { limit } => self.budget_raised(limit).await?,
             ControlToDaemon::MachineChanged {
@@ -1797,20 +1854,64 @@ impl<
             .map_err(harness)
     }
 
+    /// Puts the harness's own TUI on the terminal.
+    ///
+    /// A launch that cannot be built — the claude binary missing from the
+    /// sidecar tree — is a line in the terminal, where a failed `claude`
+    /// would have printed.
+    fn launch_harness_tui(&mut self, resume: bool) -> Result<(), WireError> {
+        match self.tui.command(resume) {
+            Ok(command) => self.terminal.launch_harness(command)?,
+            Err(error) => self.terminal.print(&format!("\r\nflycod: {error}\r\n"))?,
+        }
+        Ok(())
+    }
+
     /// Hands the user's decision to the tool call waiting on it.
+    ///
+    /// A tool call this process never raised is one the machine's
+    /// suspension took with it (issue #355): the agent asked, waited past
+    /// the idle threshold, the machine was released, and the decision that
+    /// arrives now is what started it again. The call is gone with the
+    /// process that made it, so the agent is told what the user decided
+    /// and, when that was yes, the collector answers the re-run without
+    /// asking the user a second time.
     async fn decide_approval(
         &mut self,
         id: ApprovalId,
         decision: ApprovalDecision,
+        payload: ApprovalPayload,
     ) -> Result<(), WireError> {
         let Some(harness_id) = self.approvals.remove(&id) else {
-            // Not every approval is a harness tool call waiting on a
-            // permission. The daemon's own MCP server raises one for a
-            // license-bound resize, and the control plane performs *that*
-            // itself; the decision still reaches every daemon because the
-            // room echoes it. Nothing here is blocked on it, so it is noted
-            // rather than treated as a protocol violation.
-            tracing::debug!(%id, ?decision, "a decided approval was not a harness tool call");
+            let ApprovalPayload::ToolUse { tool, input } = payload else {
+                // Not every approval is a harness tool call waiting on a
+                // permission. The daemon's own MCP server raises one for a
+                // license-bound resize, and the control plane performs
+                // *that* itself; the decision still reaches every daemon
+                // because the room echoes it. Nothing here is blocked on
+                // it, so it is noted rather than treated as a protocol
+                // violation.
+                tracing::debug!(%id, ?decision, "a decided approval was not a harness tool call");
+                return Ok(());
+            };
+            let approved = decision == ApprovalDecision::Approved;
+            tracing::info!(%id, ?decision, %tool, "a decision arrived for a tool call a suspension took");
+            let notice = ApprovalAfterSuspend {
+                tool: tool.clone(),
+                input: serde_json::to_string_pretty(&input)
+                    .map_err(|error| WireError::Harness(error.to_string()))?,
+                approved,
+            };
+            self.tell_the_agent(&notice.render().map_err(|error| notice_failed(&error))?)
+                .await?;
+            if approved
+                && self
+                    .standing
+                    .send(ApprovalPayload::ToolUse { tool, input })
+                    .is_err()
+            {
+                tracing::debug!("the harness has stopped; nothing will re-run the approved call");
+            }
             return Ok(());
         };
         let answer = match decision {
@@ -2058,7 +2159,8 @@ where
     X: crate::desktop::DesktopSession + 'static,
 {
     let (sender, mut queue) = mpsc::channel(QUEUE_DEPTH);
-    let collector = tokio::spawn(collect(relay.outputs, sender, relay.api.clone()));
+    let (standing, granted) = mpsc::unbounded_channel();
+    let collector = tokio::spawn(collect(relay.outputs, sender, relay.api.clone(), granted));
 
     // Rendered before the first frame moves, so a session that cannot state
     // what machine it is on fails here rather than running an agent that was
@@ -2107,6 +2209,7 @@ where
             stop_watch: Producing::Yes,
         },
         approvals: BTreeMap::new(),
+        standing,
         opening: Some(opening),
         deadlines: relay.deadlines,
         retry_hint: None,
