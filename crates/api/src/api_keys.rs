@@ -22,12 +22,24 @@ pub struct KeyOwner {
     pub key_id: ApiKeyId,
     /// The user it belongs to.
     pub user_id: UserId,
+    /// When the key was last stamped as used, if ever.
+    pub last_used_unix: Option<u64>,
 }
+
+/// How stale a key's `last_used_unix` may be before a request refreshes it.
+///
+/// The stamp exists so a stale credential is visible in the key list, a
+/// question answered to the hour. Refreshing it on every request made the
+/// stamp a D1 write per API-key request — a CLI loop spent the day's write
+/// quota at exactly its request rate — so a key is stamped at most once an
+/// hour.
+pub const TOUCH_EVERY_SECONDS: u64 = 3_600;
 
 #[derive(Debug, skyzen::FromRow)]
 struct OwnerRow {
     id: ApiKeyId,
     user_id: UserId,
+    last_used_unix: Option<u64>,
 }
 
 impl From<OwnerRow> for KeyOwner {
@@ -35,6 +47,7 @@ impl From<OwnerRow> for KeyOwner {
         Self {
             key_id: row.id,
             user_id: row.user_id,
+            last_used_unix: row.last_used_unix,
         }
     }
 }
@@ -132,7 +145,8 @@ pub async fn revoke(db: &Db, user_id: UserId, key_id: ApiKeyId) -> Result<(), Ap
 pub async fn find_by_token(db: &Db, presented: &str) -> Result<Option<KeyOwner>, ApiError> {
     let row: Option<OwnerRow> = sql!(
         db,
-        "SELECT id, user_id FROM api_keys WHERE token_hash = {token_hash(presented)}"
+        "SELECT id, user_id, last_used_unix FROM api_keys \
+         WHERE token_hash = {token_hash(presented)}"
     )
     .fetch_optional()
     .await?;
@@ -142,13 +156,24 @@ pub async fn find_by_token(db: &Db, presented: &str) -> Result<Option<KeyOwner>,
 
 /// Stamps a key as used, so a stale credential is visible in the key list.
 ///
+/// Writes nothing when the stamp is younger than [`TOUCH_EVERY_SECONDS`]:
+/// the answer the stamp gives does not change by the request.
+///
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails.
-pub async fn mark_used(db: &Db, key_id: ApiKeyId) -> Result<(), ApiError> {
+pub async fn mark_used(db: &Db, owner: &KeyOwner) -> Result<(), ApiError> {
+    let now = now_unix();
+    if owner
+        .last_used_unix
+        .is_some_and(|stamped| now.saturating_sub(stamped) < TOUCH_EVERY_SECONDS)
+    {
+        return Ok(());
+    }
+    let key_id = owner.key_id;
     sql!(
         db,
-        "UPDATE api_keys SET last_used_unix = {now_unix()} WHERE id = {key_id}"
+        "UPDATE api_keys SET last_used_unix = {now} WHERE id = {key_id}"
     )
     .execute()
     .await?;

@@ -25,27 +25,48 @@ context, not refetched per screen.
 
 ## 2. Visual system
 
-Direction: **cool neutral**, in the family of Codex Cloud and Grok Bot.
+Direction: **warm paper, ink, and one raised card**. The page is a sheet of
+off-white paper; the things a person acts on are pieces of paper lifted a
+step off it; everything else is set in ink and two greys directly on the
+ground. Nothing is boxed for the sake of being boxed.
 
-- Ground is pure white in light, near-black in dark. Surfaces are one step
-  off the ground, never elevated with heavy shadows.
-- Text is ink (`#111`) and two grays. No brand color on chrome.
-- There is **no accent color** on buttons. The primary action is solid ink
-  on white (white on ink in dark). Semantic colors exist only for status:
-  green (working / done), amber (needs input / warning), red (failed /
-  danger), and a neutral pulse for provisioning.
-- Chips and buttons are pills. Inputs are large, low-contrast, rounded
-  (16px) containers with the controls inside them, like the Codex composer.
-- Type: system stack, 14px base, 1.45 line height. Headings are
-  weight 600, never larger than 28px. Mono for anything the user copies.
-- Icons: a consistent set (Lucide via `lucide-solid`). Provider and harness
-  identity uses real logomarks as inline SVG assets under
-  `frontend/src/assets/logos/`.
+- Ground is warm off-white (`#f7f6f3`) in light and warm near-black
+  (`#121211`) in dark. There are three surfaces above it, and each means
+  something: **surface** (the rail, an input at rest) is a tone off the
+  ground; **sunken** (search, a user's bubble, a code block) sits a step
+  below it; **raised** (white paper with `--shadow-card` or
+  `--shadow-raised`) is a card someone acts on — the composer, a settings
+  card, a flow card, an approval. A page has one raised card per idea, and
+  a popover is raised further (`--shadow-panel`).
+- Text is ink (`#1b1a18`) and two greys (muted, faint). Nothing on chrome
+  carries a hue.
+- There is **no accent colour**. The primary action is solid ink on paper
+  (paper on ink in dark). Status colours are the only colours: green
+  (working / done), amber (needs input / warning), red (failed / danger),
+  and a neutral pulse while provisioning. Destructive buttons are ink until
+  hovered or focused, when they turn red — a page of `Remove`s is not a
+  red page.
+- Radii carry meaning: `xs` 4px for a small mark, `sm` 6px for a code
+  block, `md` 10px for inputs and rows, `lg` 14px for cards, `xl` 18px for
+  the composer and flow cards, `full` for every pill. Chips, buttons, and
+  status readouts are pills.
+- Type: Inter Variable for text and JetBrains Mono Variable for anything
+  the user copies, both self-hosted. 14px base at weight 430, line height
+  1.5; headings weight 600 with tight tracking, never larger than 26px;
+  labels 11–12px at weight 520, uppercase only for a section eyebrow. Body
+  text in a message wraps at 840px so a line stays readable.
+- Icons: one set (Lucide via `lucide-solid`) at 14–16px. Provider and
+  harness identity uses real logomarks as inline SVG assets under
+  `frontend/src/assets/logos/`; flyco's own mark is a dart.
+- A terminal is a terminal in either theme: shell output and the terminal
+  pane sit on their own dark ground with a hairline that only shows in dark.
 - Motion: status dots breathe while something is running; panels slide;
-  nothing bounces. `prefers-reduced-motion` disables all of it.
+  a press moves a control one pixel; nothing bounces.
+  `prefers-reduced-motion` disables all of it.
 
 Tokens live in `frontend/src/styles/tokens.css` and are the only place a
-color, radius, or size is defined. Component CSS reads tokens.
+colour, radius, shadow, or size is defined. Component CSS reads tokens; a
+literal colour outside that file is a defect.
 
 ## 3. Information architecture
 
@@ -1017,7 +1038,7 @@ Both ends of the wait are a web push, because the whole point is that the user d
 
 ### 9.9 When the session sits idle
 
-A session with nothing to do still has a machine running, and a machine running is money or the user's own hardware held open. So thirty minutes after the last thing anybody did — the last message, turn, terminal keystroke or approval — flyco suspends the machine: compute is released, the disk is kept, and the session reads `Interrupted · suspended`. A turn in flight is never suspended — the agent mid-answer is the one thing on the machine worth paying for — and a session that is `paused` already has its machine decided by the mechanism that paused it.
+A session with nothing to do still has a machine running, and a machine running is money or the user's own hardware held open. So thirty minutes after the last thing anybody did — the last message, turn, terminal keystroke or approval — flyco suspends the machine: compute is released, the disk is kept, and the session reads `Interrupted · suspended`. A turn in flight is never suspended — the agent mid-answer is the one thing on the machine worth paying for — unless it is blocked: an agent that raised an approval or asked the user a question and has waited on the answer for thirty minutes is doing nothing the machine is needed for, so the machine is released the same way, and the decision that eventually arrives is what starts it again. A session that is `paused` already has its machine decided by the mechanism that paused it.
 
 The same rule covers every provider. A codespace gets it from GitHub's own idle clock; everything else — an Azure VM, an AWS spot instance, a container on the user's own machine — is suspended by flyco on the same threshold, because a session should not cost differently for being idle on one cloud than another.
 

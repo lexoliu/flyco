@@ -119,6 +119,23 @@ impl SessionStart {
     }
 }
 
+/// What flycod tells the agent about a permission the user decided after
+/// the machine that asked for it was suspended (issue #355).
+///
+/// The call itself died with that process, so the notice restates it and
+/// says what to do: run it again when it was approved — the daemon answers
+/// the re-run without asking — and leave it when it was denied.
+#[derive(Debug, Template)]
+#[template(path = "approval_after_suspend.txt", escape = "none")]
+pub struct ApprovalAfterSuspend {
+    /// The tool the harness asked permission for.
+    pub tool: String,
+    /// Its input, pretty-printed JSON.
+    pub input: String,
+    /// Whether the user allowed it.
+    pub approved: bool,
+}
+
 /// What flycod tells the agent after its machine was replaced under it.
 ///
 /// The restart is the part that matters and it is stated rather than

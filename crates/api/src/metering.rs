@@ -341,6 +341,13 @@ mod worker {
 
         leg("accrue", accrue(&db, at_unix)).await?;
         leg("deliver", deliver(&db, &rooms)).await?;
+        // The request ledger's housekeeping: one delete an hour, dropping
+        // days nobody reads.
+        leg(
+            "request_budgets",
+            crate::request_budget::sweep(&db, at_unix),
+        )
+        .await?;
         leg(
             "refresh_stale",
             catalog::refresh_stale(&db, &Kv::new(kv), &Queue::new(queue), at_unix),

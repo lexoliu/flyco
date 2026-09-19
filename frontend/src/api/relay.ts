@@ -70,6 +70,14 @@ export type { ConnectionState } from "./events";
 const RECENT_WINDOW = 256;
 
 /**
+ * The most pages one catch-up pass may read. A healthy server answers
+ * `more: false` long before this; past it — or a page that fails to move
+ * the cursor — the control plane is paging forever, which on a free-plan
+ * request budget is a bug that spends the day.
+ */
+const MAX_CATCH_UP_PAGES = 200;
+
+/**
  * A key for an event that does not depend on how its JSON was ordered.
  *
  * Two deliveries of the same fact reach this client through two
@@ -243,12 +251,20 @@ export function createSessionRelay(
 
   async function catchUp(): Promise<void> {
     let more = true;
+    let pages = 0;
     while (more && !disposed) {
-      const page = await getSessionEvents(sessionId, stream.cursor ?? undefined);
+      const before = stream.cursor;
+      const page = await getSessionEvents(sessionId, before ?? undefined);
       for (const event of stream.ingestCatchUp(page.events)) {
         pushEvent(event);
       }
       more = page.more;
+      pages += 1;
+      if (more && (pages >= MAX_CATCH_UP_PAGES || stream.cursor === before)) {
+        throw new Error(
+          "the control plane kept paging session events without advancing the cursor",
+        );
+      }
     }
   }
 

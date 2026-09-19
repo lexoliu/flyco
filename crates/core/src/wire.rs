@@ -833,6 +833,12 @@ pub enum ControlToDaemon {
         id: ApprovalId,
         /// The decision.
         decision: ApprovalDecision,
+        /// What was decided, restated. A daemon that never raised the
+        /// approval — it came up on a machine this very decision started,
+        /// after the one that asked was suspended for waiting (issue #355)
+        /// — has nothing to look the id up in, and this is what lets it
+        /// tell the agent what the user allowed or refused.
+        payload: ApprovalPayload,
     },
     /// A budget threshold was crossed; [`BudgetSignal::Pause`] requires the
     /// daemon to interrupt and stop the harness immediately.
@@ -1881,6 +1887,10 @@ mod tests {
             ControlToDaemon::ApprovalDecision {
                 id: ApprovalId::generate(),
                 decision: ApprovalDecision::Approved,
+                payload: ApprovalPayload::ToolUse {
+                    tool: "Bash".to_owned(),
+                    input: serde_json::json!({ "command": "cargo test" }),
+                },
             },
             ControlToDaemon::Budget {
                 signal: BudgetSignal::Pause,

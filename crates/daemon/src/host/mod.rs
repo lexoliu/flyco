@@ -96,6 +96,19 @@ pub enum HostError {
     Lock(#[source] std::io::Error),
 }
 
+impl HostError {
+    /// The wait the control plane named, when what stopped the host was a
+    /// refusal carrying `Retry-After`.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<core::time::Duration> {
+        match self {
+            Self::ControlApi(api) => api.retry_after(),
+            Self::Wire(wire) => wire.retry_after(),
+            _ => None,
+        }
+    }
+}
+
 /// What `flycod host enroll` was asked to do.
 #[derive(Debug, Clone)]
 pub struct Enrollment {

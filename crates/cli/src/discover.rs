@@ -89,10 +89,20 @@ pub async fn branches(api: &Api, repo: &str, mode: out::Mode) -> Outcome<()> {
         .get(&format!("/v1/github/repos/{repo}/branches"))
         .await?;
     let mut branches = page.branches;
-    while let Some(cursor) = page.next_cursor {
+    let mut pages = 0_u32;
+    while let Some(cursor) = page.next_cursor.take() {
+        // A page answering with the cursor it was asked with — and a walk
+        // past the page cap — is a server paging forever, not a longer list.
+        pages += 1;
+        if pages >= crate::follow::MAX_PAGES {
+            return Err(crate::follow::paging_stalled());
+        }
         page = api
             .get(&format!("/v1/github/repos/{repo}/branches?cursor={cursor}"))
             .await?;
+        if page.next_cursor.as_deref() == Some(cursor.as_str()) {
+            return Err(crate::follow::paging_stalled());
+        }
         branches.extend(page.branches);
     }
     match mode {

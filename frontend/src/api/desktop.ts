@@ -24,9 +24,13 @@ import { openDesktopStream } from "./client";
 import {
   isDefinitiveFailure,
   nextBackoffDelay,
+  STABLE_MS,
   type BackoffOptions,
   type ConnectionState,
 } from "./events";
+import { ApiProblem } from "./problem";
+
+export { STABLE_MS };
 
 /**
  * What a `hello` frame announces: the watcher lease this connection holds
@@ -178,10 +182,18 @@ export function createDesktopFeed(
       if (!running) {
         return;
       }
-      attempt = 0;
+      // The ladder resets on a stream that *held*, not on one that merely
+      // opened — the open alone proves nothing about the connection.
+      const openedAt = Date.now();
       setFailure(null);
       setState("live");
-      await pump(response);
+      try {
+        await pump(response);
+      } finally {
+        if (Date.now() - openedAt >= STABLE_MS) {
+          attempt = 0;
+        }
+      }
       if (!running) {
         return;
       }
@@ -196,17 +208,20 @@ export function createDesktopFeed(
         running = false;
         return;
       }
-      scheduleReconnect();
+      scheduleReconnect(error);
     }
   }
 
-  function scheduleReconnect(): void {
+  function scheduleReconnect(error?: unknown): void {
     if (!running) {
       return;
     }
     setWatcher(null);
     setState("reconnecting");
-    const delay = nextBackoffDelay(attempt, options.backoff);
+    // A 429's Retry-After is a wait, not a transport error: it floors the
+    // delay whatever rung the ladder is on.
+    const retryAfterMs = error instanceof ApiProblem ? error.retryAfterMs : undefined;
+    const delay = Math.max(nextBackoffDelay(attempt, options.backoff), retryAfterMs ?? 0);
     attempt += 1;
     reconnectTimer = setTimeout(() => {
       void connect();

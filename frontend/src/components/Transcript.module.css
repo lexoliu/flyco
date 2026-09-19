@@ -2,7 +2,13 @@
  * The transcript is a reading surface, not a panel: no border, no card, no
  * background of its own. What separates one item from the next is space,
  * and the only boxed things in the column are the ones the user has to act
- * on or copy — an approval, a tool call, a code block.
+ * on or copy — an approval, a shell command, a code block.
+ *
+ * Everything the machine did around the conversation — a machine coming
+ * up, a model switched, a tool run — is one kind of line: a glyph, a
+ * sentence in the meta grey, and a figure at the right. One treatment, so
+ * the column reads as prose with its events noted in the margin, not as a
+ * stack of boxes of assorted shapes.
  */
 .transcript {
   list-style: none;
@@ -24,11 +30,12 @@
 }
 
 .userMessage {
-  max-width: 80%;
+  max-width: 78%;
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-lg);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-xl) var(--radius-xl) var(--radius-xs) var(--radius-xl);
   background: var(--color-surface-sunken);
+  color: var(--color-text);
   font-size: var(--text-md);
   line-height: var(--line-normal);
   white-space: pre-wrap;
@@ -40,8 +47,12 @@
    wonders where it came from. */
 .userMessageAuthor {
   display: block;
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
+  margin-bottom: 2px;
+  color: var(--color-text-faint);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-caps);
 }
 
 .turn {
@@ -60,7 +71,7 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md);
   background: var(--color-danger-muted);
 }
@@ -72,6 +83,7 @@
   margin: 0;
   color: var(--color-danger);
   font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   line-height: var(--line-normal);
 }
 
@@ -92,19 +104,24 @@
 .workedFor {
   margin: 0;
   color: var(--color-text-faint);
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 
 /* ── Tool calls ──────────────────────────────────────────────────────── */
 
+/*
+ * A run of tool calls is a list of quiet lines with a hairline down the
+ * left: the agent's working shown in the margin of its answer.
+ */
 .tools {
   list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 0;
   margin: 0;
-  padding: 0;
+  padding: 0 0 0 var(--space-2);
+  border-left: 2px solid var(--color-border);
 }
 
 .toolRow {
@@ -115,7 +132,8 @@
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  min-height: 28px;
+  padding: 0 var(--space-2);
   border-radius: var(--radius-sm);
   cursor: pointer;
   list-style: none;
@@ -155,8 +173,12 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--color-text);
+  color: var(--color-text-muted);
   font-size: var(--text-sm);
+}
+
+.toolSummary:hover .toolText {
+  color: var(--color-text);
 }
 
 .toolDuration {
@@ -187,9 +209,10 @@
 
 .toolDetailLabel {
   margin: 0 0 var(--space-2);
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
+  font-weight: var(--weight-medium);
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: var(--tracking-caps);
   color: var(--color-text-faint);
 }
 
@@ -202,7 +225,7 @@
   overflow: auto;
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface-sunken);
+  background: var(--color-surface-raised);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: var(--line-normal);
@@ -247,17 +270,18 @@
 /*
  * Boxed and mono throughout: a `!` command is the one thing in the column
  * the machine wrote verbatim, and reading it as prose would be reading it
- * wrong.
+ * wrong. Set on the terminal's own dark ground, in either theme.
  */
 .shell {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  border: var(--border-width) solid var(--color-border);
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--color-terminal-border);
   border-radius: var(--radius-md);
-  background: var(--color-surface-sunken);
+  background: var(--color-terminal-bg);
+  color: #e8e6e0;
 }
 
 .shellCommand {
@@ -273,7 +297,7 @@
 .shellIcon {
   flex: none;
   margin-top: 2px;
-  color: var(--color-text-faint);
+  color: #8f8c84;
 }
 
 .shellText {
@@ -289,19 +313,19 @@
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   line-height: var(--line-normal);
-  color: var(--color-text-muted);
+  color: #b3b0a8;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
 /* Stderr is not an error, so it is marked rather than alarmed about. */
 .shellOutput span[data-stream="stderr"] {
-  color: var(--color-warning);
+  color: #f0b44c;
 }
 
 .shellTruncated {
   margin: 0;
-  color: var(--color-text-faint);
+  color: #8f8c84;
   font-size: var(--text-xs);
 }
 
@@ -310,34 +334,36 @@
   align-items: center;
   gap: var(--space-2);
   margin: 0;
-  color: var(--color-text-faint);
-  font-size: var(--text-sm);
+  color: #8f8c84;
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .shellStatus[data-ok="false"] {
-  color: var(--color-danger);
+  color: #f0766a;
 }
 
 .shellStatus[data-ok="true"] {
-  color: var(--color-success);
+  color: #4fc77c;
 }
 
 .shellElapsed {
   margin-left: auto;
-  color: var(--color-text-faint);
+  color: #8f8c84;
 }
 
 /* ── Provisioning timeline ───────────────────────────────────────────── */
 
+/*
+ * The machine coming up. While it is happening the stages are a short
+ * list; once it is up they fold to one line — the same event line every
+ * other machine fact in the column uses.
+ */
 .timeline {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3) var(--space-4);
-  border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  padding: var(--space-1) 0;
 }
 
 /*
@@ -358,7 +384,9 @@
 .stages {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: var(--space-1);
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--color-border);
 }
 
 /*
@@ -369,11 +397,20 @@
 .timelineSummary {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-sm);
   list-style: none;
   cursor: pointer;
   font-size: var(--text-sm);
   color: var(--color-text-muted);
+  transition: background var(--transition-fast);
+}
+
+.timelineSummary:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
 }
 
 .timelineSummary::-webkit-details-marker {
@@ -391,7 +428,9 @@ details[open] > .timelineSummary .toolChevron {
 .stage {
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  min-height: 26px;
+  padding: 0 var(--space-2);
   font-size: var(--text-sm);
   color: var(--color-text-muted);
 }
@@ -421,6 +460,7 @@ details[open] > .timelineSummary .toolChevron {
   margin-left: auto;
   flex: none;
   color: var(--color-text-faint);
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -443,14 +483,19 @@ details[open] > .timelineSummary .toolChevron {
 
 /* ── Approvals ───────────────────────────────────────────────────────── */
 
+/*
+ * The one thing in the column asking for a decision, so the one thing
+ * drawn as a card with a coloured edge.
+ */
 .approval {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-4);
-  border: var(--border-width) solid var(--color-warning);
+  padding: var(--space-4) var(--space-5);
+  border: var(--border-width) solid color-mix(in srgb, var(--color-warning) 40%, var(--color-border));
   border-radius: var(--radius-lg);
-  background: var(--color-warning-soft);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-card);
 }
 
 /* A decided approval is a record, not a request: it goes quiet. */
@@ -458,12 +503,14 @@ details[open] > .timelineSummary .toolChevron {
 .approval[data-state="denied"] {
   border-color: var(--color-border);
   background: var(--color-surface);
+  box-shadow: none;
 }
 
 .approvalTitle {
   margin: 0;
   font-size: var(--text-md);
   font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-snug);
 }
 
 /*
@@ -479,7 +526,7 @@ details[open] > .timelineSummary .toolChevron {
   margin: 0;
   padding: var(--space-3);
   border-radius: var(--radius-md);
-  background: var(--color-bg);
+  background: var(--color-surface-sunken);
 }
 
 .approvalField {
@@ -521,7 +568,7 @@ details[open] > .timelineSummary .toolChevron {
   max-height: 220px;
   overflow: auto;
   border-radius: var(--radius-md);
-  background: var(--color-bg);
+  background: var(--color-surface-sunken);
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   white-space: pre-wrap;
@@ -535,12 +582,15 @@ details[open] > .timelineSummary .toolChevron {
 
 .approve,
 .deny {
-  padding: var(--space-2) var(--space-4);
+  height: 32px;
+  padding: 0 var(--space-4);
   border-radius: var(--radius-full);
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   cursor: pointer;
-  transition: transform var(--transition-fast), background var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .approve {
@@ -582,59 +632,52 @@ details[open] > .timelineSummary .toolChevron {
 
 /* ── Notices ─────────────────────────────────────────────────────────── */
 
-.notice {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-sunken);
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-  line-height: var(--line-normal);
-}
-
-.notice svg {
-  flex: none;
-  margin-top: 2px;
-}
-
-.notice[data-tone="warning"] {
-  background: var(--color-warning-soft);
-  color: var(--color-warning);
-}
-
 /*
- * The session moving onto another machine (docs/ux.md §9.5). Reads like a
- * notice because that is what it is, with the new rate set apart from the
- * sentence: what happened is one thought, what it costs from here is
- * another.
+ * Every machine fact — a model switched, a machine changed, a notice —
+ * is the same event line: glyph, sentence, figure at the right. No box.
  */
+.notice,
 .machineChange {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  min-height: 28px;
   margin: 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-sunken);
+  padding: 0 var(--space-2);
   color: var(--color-text-muted);
   font-size: var(--text-sm);
   line-height: var(--line-normal);
 }
 
+.notice svg,
 .machineChange svg {
   flex: none;
+  color: var(--color-text-faint);
+}
+
+.notice[data-tone="warning"] {
+  color: var(--color-warning);
+}
+
+.notice[data-tone="warning"] svg {
+  color: var(--color-warning);
 }
 
 .machineChangePrice {
   margin-left: auto;
+  color: var(--color-text-faint);
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 
 .notice[data-tone="danger"] {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
   background: var(--color-danger-muted);
+  color: var(--color-danger);
+}
+
+.notice[data-tone="danger"] svg {
   color: var(--color-danger);
 }
 
@@ -663,6 +706,6 @@ details[open] > .timelineSummary .toolChevron {
   padding: var(--space-3) var(--space-4);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-sm);
 }
-
