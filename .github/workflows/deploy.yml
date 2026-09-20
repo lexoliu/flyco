@@ -78,8 +78,8 @@ jobs:
           tool: cargo-binstall
       - name: Install skyzen-cli
         run: >-
-          skyzen --version 2>/dev/null | grep -q '0\.3\.0'
-          || cargo binstall --no-confirm --locked skyzen-cli@0.3.0
+          skyzen --version 2>/dev/null | grep -q '0\.4\.1'
+          || cargo binstall --no-confirm --locked skyzen-cli@0.4.1
       # wrangler is what `skyzen deploy` invokes under the hood and what the
       # Pages step calls directly.
       - run: npm install --global wrangler@4
@@ -91,6 +91,19 @@ jobs:
         env:
           FLYCO_DEPLOY_ENV: ${{ secrets.FLYCO_DEPLOY_ENV }}
         run: printf '%s\n' "$FLYCO_DEPLOY_ENV" > .env
+      # The schema goes first and the code second, so a deploy never runs
+      # code against a database that lacks its columns (issue #363: three
+      # migrations shipped behind their code and every minute cron and every
+      # budget read failed until they were applied by hand). `skyzen
+      # migrate` is `wrangler d1 migrations apply --remote` on every
+      # database the manifest declares, from its `migrations_dir`; a
+      # migration that fails stops the deploy here, with the old code still
+      # serving.
+      - name: Apply D1 migrations
+        working-directory: crates/api
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: skyzen migrate
       - name: Deploy the worker
         working-directory: crates/api
         env:
