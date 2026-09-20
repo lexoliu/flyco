@@ -1237,7 +1237,7 @@ async fn echo_of(
     command: &ControlToDaemon,
 ) -> Result<Vec<EmittedEvent>, ApiError> {
     let (event, recorded) = match command {
-        ControlToDaemon::ApprovalDecision { id, decision } => (
+        ControlToDaemon::ApprovalDecision { id, decision, .. } => (
             ClientEvent::ApprovalDecided {
                 id: *id,
                 decision: *decision,

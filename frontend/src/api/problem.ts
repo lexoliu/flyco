@@ -36,8 +36,17 @@ export class ApiProblem extends Error {
    * field per problem type.
    */
   readonly document: Problem;
+  /**
+   * The wait the server asked for via `Retry-After`, in milliseconds.
+   *
+   * Only the delta-seconds form is honoured — an HTTP-date is treated as
+   * absent, as is a response that carried no header at all. A `429` from
+   * the request budget always carries one, and a caller that reconnects
+   * must wait at least this long.
+   */
+  readonly retryAfterMs: number | undefined;
 
-  constructor(problem: Problem) {
+  constructor(problem: Problem, retryAfterMs?: number) {
     // The detail is the sentence written for a person; the title is the
     // status phrase, which says nothing a page has not already said.
     super(problem.detail === "" ? problem.title : problem.detail);
@@ -47,6 +56,7 @@ export class ApiProblem extends Error {
     this.status = problem.status;
     this.detail = problem.detail;
     this.document = problem;
+    this.retryAfterMs = retryAfterMs;
   }
 }
 
@@ -59,8 +69,8 @@ export class ApiProblem extends Error {
  * one of these surfaces.
  */
 export class NotImplementedError extends ApiProblem {
-  constructor(problem: Problem) {
-    super(problem);
+  constructor(problem: Problem, retryAfterMs?: number) {
+    super(problem, retryAfterMs);
     this.name = "NotImplementedError";
   }
 }
@@ -125,8 +135,22 @@ export async function problemFromResponse(response: Response): Promise<Error> {
   }
 
   const problem = (await response.json()) as Problem;
+  const retryAfterMs = retryAfterMsOf(response);
   if (NOT_IMPLEMENTED_SUFFIXES.some((suffix) => problem.type.endsWith(suffix))) {
-    return new NotImplementedError(problem);
+    return new NotImplementedError(problem, retryAfterMs);
   }
-  return new ApiProblem(problem);
+  return new ApiProblem(problem, retryAfterMs);
+}
+
+/**
+ * The response's `Retry-After` in milliseconds, or `undefined` when the
+ * header is absent or carries the HTTP-date form — only an integer number
+ * of seconds is a wait this client knows how to honour.
+ */
+function retryAfterMsOf(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (raw === null || !/^\d+$/.test(raw)) {
+    return undefined;
+  }
+  return Number(raw) * 1000;
 }

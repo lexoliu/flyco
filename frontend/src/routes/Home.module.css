@@ -1,6 +1,9 @@
 /*
  * One column, and enough room above it that the question is the first
  * thing on the screen rather than the first thing under something else.
+ *
+ * The page is otherwise empty on purpose: the composer is the only raised
+ * thing on it, so it reads as the one place to type.
  */
 .page {
   flex: 1;
@@ -14,11 +17,14 @@
   gap: var(--space-5);
 }
 
+/* The question, set light and large: a heading that reads as an
+   invitation rather than a title. */
 .greeting {
-  margin: 0;
+  margin: 0 0 var(--space-1) var(--space-1);
   font-size: var(--text-2xl);
-  font-weight: var(--weight-semibold);
-  letter-spacing: -0.02em;
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-tight);
+  color: var(--color-text);
 }
 
 /* ── Readiness cards ─────────────────────────────────────────────────── */
@@ -36,19 +42,29 @@
   padding: var(--space-3) var(--space-4);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-card);
   text-decoration: none;
   color: inherit;
-  transition: border-color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+}
+
+.readinessCard > svg {
+  flex: none;
+  color: var(--color-text-muted);
 }
 
 .readinessCard:hover {
   border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-raised);
 }
 
 .readinessText {
   display: flex;
   flex-direction: column;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -66,8 +82,9 @@
   display: inline-flex;
   align-items: center;
   gap: var(--space-1);
-  font-size: var(--text-md);
-  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
   white-space: nowrap;
 }
 

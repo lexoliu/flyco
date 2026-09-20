@@ -13,7 +13,7 @@
 .terminal {
   flex: 1;
   min-height: 0;
-  border: var(--border-width) solid var(--color-border);
+  border: var(--border-width) solid var(--color-terminal-border);
   border-radius: var(--radius-md);
   background: var(--color-terminal-bg);
   padding: var(--space-2);

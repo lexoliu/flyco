@@ -46,10 +46,19 @@ export default function TerminalPanelImpl(props: TerminalPanelImplProps) {
     // captured before the await, rather than the (by-now-detached) implicit
     // one.
     runWithOwner(owner, () => {
+      // xterm paints its own ground, so it is told the page's terminal
+      // colour rather than left to its stock black inside a not-black box.
+      const ground = getComputedStyle(document.documentElement);
       const term: XTerm = new Terminal({
         convertEol: true,
-        fontFamily: "var(--font-mono)",
+        fontFamily: ground.getPropertyValue("--font-mono").trim(),
         fontSize: 13,
+        theme: {
+          background: ground.getPropertyValue("--color-terminal-bg").trim(),
+          foreground: "#e8e6e0",
+          cursor: "#e8e6e0",
+          selectionBackground: "rgba(232, 230, 224, 0.25)",
+        },
       });
       const fit = new FitAddon();
       term.loadAddon(fit);

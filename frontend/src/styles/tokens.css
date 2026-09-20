@@ -1,19 +1,19 @@
 /*
- * Design tokens: the single source of truth for color, spacing, radii, and
- * type scale. Every other stylesheet reads these custom properties instead
- * of hardcoding values.
+ * Design tokens: the single source of truth for colour, spacing, radii,
+ * shadow and type. Every other stylesheet reads these custom properties
+ * instead of hardcoding values.
  *
- * The system is cool neutral (docs/ux.md §2). Ground is pure white in
- * light and near-black in dark; surfaces are one step off the ground and
- * are separated by a hairline border rather than by a shadow. Text is ink
- * and two grays.
+ * The system is a warm neutral (docs/ux.md §2). The ground is off-white
+ * paper in light and a warm near-black in dark; a card is one step up from
+ * the ground and is lifted by a soft shadow rather than separated by a
+ * border alone. Text is ink and two greys.
  *
- * There is deliberately **no accent color**. A primary action is solid ink
- * on white (white on ink in dark), which is why `--color-primary` and
+ * There is deliberately **no accent colour**. A primary action is solid
+ * ink on paper (paper on ink in dark), which is why `--color-primary` and
  * `--color-primary-text` swap between themes rather than naming a hue.
- * Color is reserved for status — green while something is working, amber
+ * Colour is reserved for status — green while something is working, amber
  * when a session is waiting on the user, red when it failed — so that the
- * one colored thing on a screen is always the thing that needs a decision.
+ * one coloured thing on a screen is always the thing that needs a decision.
  *
  * Theme resolution order:
  *   1. `prefers-color-scheme` picks a default.
@@ -28,33 +28,46 @@
   --space-4: 1rem;
   --space-5: 1.5rem;
   --space-6: 2rem;
+  --space-7: 2.5rem;
   --space-8: 3rem;
 
-  /* Pills and 16px input containers are the shape of the whole product. */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
+  /* Controls are 6px, cards 10–14px, the composer and dialogs 18px. A
+     pill is only ever a pill: chips, buttons, the status badge. */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
   --radius-full: 999px;
 
   --font-sans:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica,
-    Arial, sans-serif;
+    "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, Helvetica, Arial, sans-serif;
   --font-mono:
-    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular,
+    "SF Mono", Menlo, Consolas, monospace;
 
   /* 14px base. `--text-2xl` is the ceiling: no heading is ever larger. */
-  --text-xs: 0.6875rem;
+  --text-2xs: 0.6875rem;
+  --text-xs: 0.75rem;
   --text-sm: 0.8125rem;
   --text-md: 0.875rem;
   --text-lg: 1rem;
   --text-xl: 1.25rem;
-  --text-2xl: 1.75rem;
+  --text-2xl: 1.625rem;
 
   --line-tight: 1.2;
-  --line-normal: 1.45;
+  --line-normal: 1.5;
+  --line-relaxed: 1.65;
 
-  --weight-medium: 500;
+  --weight-normal: 430;
+  --weight-medium: 520;
   --weight-semibold: 600;
+
+  /* Headings and wordmarks are set tighter than body text. */
+  --tracking-tight: -0.02em;
+  --tracking-snug: -0.01em;
+  --tracking-caps: 0.06em;
 
   /* Content width of every centred screen. */
   --measure: 720px;
@@ -62,101 +75,114 @@
   --border-width: 1px;
 
   --transition-fast: 120ms ease;
-  --transition-panel: 200ms cubic-bezier(0.2, 0, 0, 1);
+  --transition-panel: 180ms cubic-bezier(0.2, 0, 0, 1);
 
   /* Light palette (default). */
-  --color-bg: #ffffff;
-  --color-surface: #fafafa;
-  --color-surface-sunken: #f4f4f5;
+  --color-bg: #f7f6f3;
+  --color-surface: #f2f1ed;
+  --color-surface-sunken: #ebeae5;
   --color-surface-raised: #ffffff;
-  --color-border: #e6e6e9;
-  --color-border-strong: #d2d2d8;
-  --color-text: #111113;
-  --color-text-muted: #6a6a73;
-  --color-text-faint: #9a9aa3;
+  --color-border: #e5e3dd;
+  --color-border-strong: #d1cec6;
+  --color-text: #1b1a18;
+  --color-text-muted: #6c6a64;
+  --color-text-faint: #9c9992;
 
-  --color-primary: #111113;
+  --color-primary: #1b1a18;
   --color-primary-text: #ffffff;
-  --color-primary-hover: #2a2a2e;
+  --color-primary-hover: #33312d;
 
-  --color-success: #15803d;
-  --color-success-soft: #e8f4ec;
-  --color-warning: #b45309;
-  --color-warning-soft: #fdf1e3;
-  --color-danger: #b91c1c;
-  --color-danger-muted: #fbeaea;
-  --color-neutral-dot: #9a9aa3;
+  --color-success: #1f7a45;
+  --color-success-soft: #e6f3ea;
+  --color-warning: #9a5b00;
+  --color-warning-soft: #fbf0dc;
+  --color-danger: #b3261e;
+  --color-danger-muted: #fbe9e7;
+  --color-neutral-dot: #9c9992;
 
-  --color-focus-ring: #111113;
-  --color-overlay: rgb(17 17 19 / 8%);
+  --color-focus-ring: #1b1a18;
+  --color-overlay: rgb(27 26 24 / 8%);
 
-  --shadow-sm: 0 1px 2px rgb(17 17 19 / 5%);
-  --shadow-panel: 0 8px 28px rgb(17 17 19 / 10%);
+  /* One step up from the ground, and the floating panel above that. */
+  --shadow-sm: 0 1px 2px rgb(27 26 24 / 5%), 0 0 0 1px rgb(27 26 24 / 3%);
+  --shadow-card: 0 1px 2px rgb(27 26 24 / 4%), 0 2px 6px -2px rgb(27 26 24 / 6%);
+  --shadow-raised:
+    0 1px 2px rgb(27 26 24 / 5%), 0 10px 30px -14px rgb(27 26 24 / 22%);
+  --shadow-panel: 0 12px 36px -10px rgb(27 26 24 / 26%), 0 1px 3px rgb(27 26 24 / 8%);
 
   /* A terminal is a terminal in either theme: xterm renders its own dark
      palette, and the surface behind it has to match that rather than the
      page. It is therefore the one colour that does not flip. */
-  --color-terminal-bg: #0b0b0c;
+  --color-terminal-bg: #111110;
+  --color-terminal-border: #111110;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --color-bg: #0b0b0c;
-    --color-surface: #141416;
-    --color-surface-sunken: #191a1c;
-    --color-surface-raised: #1c1d20;
-    --color-border: #26262a;
-    --color-border-strong: #35353b;
-    --color-text: #f2f2f3;
-    --color-text-muted: #a0a0a8;
-    --color-text-faint: #6c6c74;
+    --color-bg: #121211;
+    --color-surface: #171716;
+    --color-surface-sunken: #1f1f1d;
+    --color-surface-raised: #1c1c1a;
+    --color-border: #2a2a27;
+    --color-border-strong: #3b3a36;
+    --color-text: #ecebe6;
+    --color-text-muted: #a3a19a;
+    --color-text-faint: #706e68;
 
-    --color-primary: #f2f2f3;
-    --color-primary-text: #0b0b0c;
+    --color-primary: #ecebe6;
+    --color-primary-text: #121211;
     --color-primary-hover: #ffffff;
 
-    --color-success: #4ade80;
-    --color-success-soft: #14241a;
-    --color-warning: #fbbf24;
-    --color-warning-soft: #2a2113;
-    --color-danger: #f87171;
-    --color-danger-muted: #2c1717;
-    --color-neutral-dot: #6c6c74;
+    --color-success: #4fc77c;
+    --color-success-soft: #15261b;
+    --color-warning: #f0b44c;
+    --color-warning-soft: #2b2114;
+    --color-danger: #f0766a;
+    --color-danger-muted: #2e1917;
+    --color-neutral-dot: #706e68;
 
-    --color-focus-ring: #f2f2f3;
+    --color-focus-ring: #ecebe6;
+    --color-terminal-bg: #0b0b0a;
+    --color-terminal-border: #2a2926;
     --color-overlay: rgb(0 0 0 / 45%);
 
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
-    --shadow-panel: 0 8px 28px rgb(0 0 0 / 55%);
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 35%), 0 0 0 1px rgb(255 255 255 / 3%);
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 30%), 0 2px 8px -2px rgb(0 0 0 / 40%);
+    --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -14px rgb(0 0 0 / 70%);
+    --shadow-panel: 0 12px 36px -10px rgb(0 0 0 / 70%), 0 1px 3px rgb(0 0 0 / 40%);
   }
 }
 
 :root[data-theme="dark"] {
-  --color-bg: #0b0b0c;
-  --color-surface: #141416;
-  --color-surface-sunken: #191a1c;
-  --color-surface-raised: #1c1d20;
-  --color-border: #26262a;
-  --color-border-strong: #35353b;
-  --color-text: #f2f2f3;
-  --color-text-muted: #a0a0a8;
-  --color-text-faint: #6c6c74;
+  --color-bg: #121211;
+  --color-surface: #171716;
+  --color-surface-sunken: #1f1f1d;
+  --color-surface-raised: #1c1c1a;
+  --color-border: #2a2a27;
+  --color-border-strong: #3b3a36;
+  --color-text: #ecebe6;
+  --color-text-muted: #a3a19a;
+  --color-text-faint: #706e68;
 
-  --color-primary: #f2f2f3;
-  --color-primary-text: #0b0b0c;
+  --color-primary: #ecebe6;
+  --color-primary-text: #121211;
   --color-primary-hover: #ffffff;
 
-  --color-success: #4ade80;
-  --color-success-soft: #14241a;
-  --color-warning: #fbbf24;
-  --color-warning-soft: #2a2113;
-  --color-danger: #f87171;
-  --color-danger-muted: #2c1717;
-  --color-neutral-dot: #6c6c74;
+  --color-success: #4fc77c;
+  --color-success-soft: #15261b;
+  --color-warning: #f0b44c;
+  --color-warning-soft: #2b2114;
+  --color-danger: #f0766a;
+  --color-danger-muted: #2e1917;
+  --color-neutral-dot: #706e68;
 
-  --color-focus-ring: #f2f2f3;
+  --color-focus-ring: #ecebe6;
+    --color-terminal-bg: #0b0b0a;
+    --color-terminal-border: #2a2926;
   --color-overlay: rgb(0 0 0 / 45%);
 
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
-  --shadow-panel: 0 8px 28px rgb(0 0 0 / 55%);
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / 35%), 0 0 0 1px rgb(255 255 255 / 3%);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 30%), 0 2px 8px -2px rgb(0 0 0 / 40%);
+  --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -14px rgb(0 0 0 / 70%);
+  --shadow-panel: 0 12px 36px -10px rgb(0 0 0 / 70%), 0 1px 3px rgb(0 0 0 / 40%);
 }

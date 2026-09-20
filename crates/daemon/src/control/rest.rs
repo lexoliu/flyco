@@ -29,6 +29,7 @@
 //! exactly this session's daemon-scoped routes.
 
 use core::future::Future;
+use core::num::NonZeroU32;
 use core::time::Duration;
 
 use flyco_core::wire::{
@@ -72,6 +73,13 @@ pub enum ControlApiError {
         /// stop trying. Parsing the detail prose would couple a client to
         /// English sentences.
         kind: String,
+        /// The wait the control plane named in `Retry-After`, in seconds,
+        /// when it did — a `429` always does (issue #342). The relay
+        /// sleeps at least this long before the next request, whatever
+        /// its own backoff ladder says. Non-zero seconds rather than a
+        /// `Duration`: a wait of nothing is no wait, and four bytes keep
+        /// the variant small enough to return by value.
+        retry_after_secs: Option<NonZeroU32>,
     },
     /// The control plane answered with a status but no problem document.
     #[error("the control plane answered {method} {path} with HTTP {status}")]
@@ -82,6 +90,9 @@ pub enum ControlApiError {
         path: String,
         /// Status code it carried.
         status: u16,
+        /// The wait named in `Retry-After`, in non-zero seconds, when the
+        /// answer carried one.
+        retry_after_secs: Option<NonZeroU32>,
     },
     /// The configured control-plane URL cannot address a route.
     #[error("the control-plane URL cannot address `{0}`")]
@@ -100,14 +111,27 @@ pub(crate) fn transport(error: impl core::fmt::Display) -> ControlApiError {
 /// and a refusal reaches the daemon's log saying *why* rather than showing
 /// a bare status line.
 pub(crate) fn refused(method: &'static str, path: &str, error: &zenwave::Error) -> ControlApiError {
-    let zenwave::Error::Http { status, .. } = error else {
+    let zenwave::Error::Http {
+        status, response, ..
+    } = error
+    else {
         return ControlApiError::Transport(error.to_string());
     };
+    // RFC 9110 §10.2.3 allows seconds or an HTTP-date; flyco writes only
+    // the number, and a date would name a wait this daemon could honour
+    // only with a clock it trusts.
+    let retry_after_secs = response
+        .response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<NonZeroU32>().ok());
     error.deserialize_http_error::<Problem>().map_or_else(
         || ControlApiError::Status {
             method,
             path: path.to_owned(),
             status: status.as_u16(),
+            retry_after_secs,
         },
         |problem| ControlApiError::Refused {
             method,
@@ -116,11 +140,27 @@ pub(crate) fn refused(method: &'static str, path: &str, error: &zenwave::Error) 
             title: problem.title,
             detail: problem.detail,
             kind: problem.kind,
+            retry_after_secs,
         },
     )
 }
 
 impl ControlApiError {
+    /// The wait the control plane named, when its answer carried
+    /// `Retry-After`.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::Refused {
+                retry_after_secs, ..
+            }
+            | Self::Status {
+                retry_after_secs, ..
+            } => retry_after_secs.map(|seconds| Duration::from_secs(seconds.get().into())),
+            Self::Transport(_) | Self::Unaddressable(_) => None,
+        }
+    }
+
     /// The problem type's slug, when this failure is a typed refusal.
     ///
     /// A refusal's slug is the machine-readable half of the document: the

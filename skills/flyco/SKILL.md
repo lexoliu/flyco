@@ -96,6 +96,15 @@ Machines bill while they live. Always:
 - `wait` and `run` returning `approval` (exit 7) means the agent is blocked on a decision — list with `session approvals --pending`, decide with `session approve … --allow|--deny`, then `send` to continue.
 - `paused` (exit 8) means budget exhausted or machine reclaimed — resolve the pause (`session set --budget`, then `session resume`) rather than retrying the same call.
 
+## Quota etiquette
+
+The control plane is one Cloudflare Worker on a free-plan daily quota shared by every user, and it charges every request to the caller: a session daemon, a user, or an address that loops at line rate is refused with `429` for the rest of the UTC day, and a loop that outruns the account's ceiling takes every session down with it. So:
+
+- Every wait names its timeout: `flyco run --timeout`, `flyco session wait --timeout`. Never poll `session get` or `session events` in a shell loop — one `wait` or one `--follow` per session, and never two `--follow` on the same session.
+- Exit 5 with a `429` problem is a wait, not an error: read `Retry-After` from the problem output and do nothing to that session until it has passed. `request-budget-exhausted` names hours — stop and report it; do not retry, switch keys, or open another session to continue.
+- Stop what you start: `session stop` or `run --stop`, and no `wait`, `--follow` or `run` left running after the task ends.
+- No load tests, soak tests or end-to-end loops against `dev.flyco.dev`; a live check is one session, one prompt, one wait.
+
 ## Exit codes
 
 | Code | Meaning |

@@ -4,6 +4,7 @@
 //! `testing` fixtures without exposing them in the public API.
 
 mod activity;
+mod budgets;
 mod catalog;
 mod claude_oauth;
 mod cli;
@@ -24,6 +25,7 @@ mod providers;
 mod provisioning;
 mod push;
 mod relay;
+mod request_budget;
 mod responses;
 mod room;
 mod row_budget;

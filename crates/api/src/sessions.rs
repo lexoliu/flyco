@@ -1515,12 +1515,17 @@ pub async fn idle_since(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiEr
 /// Three conditions, each guarding a different cost. `active` means nothing
 /// else has already ended the machine's life — a paused session's machine
 /// is the usage-limit sweep's decision, an interrupted one's is already
-/// gone. `activity != working` means no turn is in flight: a suspension
-/// that killed the agent mid-answer would lose the work the machine was
-/// running to produce, and a session merely waiting for a decision is what
-/// suspension is *for*. And `last_active_unix` past the cutoff is the
-/// idleness itself — [`SUSPEND_AFTER_IDLE_SECS`], not the archive week,
-/// because compute bills by the minute and a disk does not.
+/// gone. `last_active_unix` past the cutoff is the idleness itself —
+/// [`SUSPEND_AFTER_IDLE_SECS`], not the archive week, because compute
+/// bills by the minute and a disk does not. And no turn is in flight, or
+/// the one in flight is blocked: a suspension that killed the agent
+/// mid-answer would lose the work the machine was running to produce, but
+/// an agent that raised an approval and has waited on it as long as the
+/// idle threshold is doing nothing the machine is needed for — the user is
+/// away and the agent cannot move until they are back, which is what
+/// suspension is *for* (issue #355). The blocked turn's clock is the
+/// approval's own age rather than the turn's, so a long turn that only
+/// just asked keeps its machine.
 ///
 /// The machine join admits `deallocated` as well as `running`: a machine
 /// already off needs no provider call, but the session write that goes
@@ -1535,6 +1540,7 @@ pub async fn suspendable(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiE
     let cutoff = at_unix.saturating_sub(SUSPEND_AFTER_IDLE_SECS);
     let active = SessionState::Active;
     let working = SessionActivity::Working;
+    let pending = ApprovalState::Pending;
     let running = flyco_core::machine::MachineState::Running;
     let deallocated = flyco_core::machine::MachineState::Deallocated;
     Ok(sql!(
@@ -1542,8 +1548,12 @@ pub async fn suspendable(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiE
         "SELECT sessions.id AS id, sessions.user_id AS user_id FROM sessions \
          JOIN machines ON machines.session_id = sessions.id \
          WHERE sessions.state = {active} \
-         AND sessions.activity != {working} \
          AND sessions.last_active_unix <= {cutoff} \
+         AND (sessions.activity != {working} \
+              OR EXISTS (SELECT 1 FROM approvals \
+                         WHERE approvals.session_id = sessions.id \
+                         AND approvals.state = {pending} \
+                         AND approvals.created_at_unix <= {cutoff})) \
          AND (machines.state = {running} OR machines.state = {deallocated})"
     )
     .fetch_all()

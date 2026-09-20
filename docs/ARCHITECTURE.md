@@ -36,6 +36,14 @@ A Durable Object cannot reach D1 or the Worker's KV, so every check that needs t
 
 **Transcripts never ride the relay.** A transcript is unbounded while an event row is not, so `flycod` writes batches over ordinary authenticated REST to R2 at `transcripts/{session}/{stream}/{seq:08}.jsonl`. The zero-padded sequence makes lexicographic order equal numeric order, so a read is a prefix list with no index to keep consistent, and batches are immutable — rewriting one would silently reorder the transcript, so it is a 409.
 
+## Request budgets
+
+The control plane runs on Cloudflare's free plan, whose ceilings are account-wide and daily: 100k Worker requests, 100k Durable Object requests, 5M Durable Object row reads, 100k D1 row writes. One client looping at line rate spends the whole account's day (issues #174, #288, #336, #342), so the Worker charges every request to a **principal** and refuses a principal that has spent its share, before that share becomes everyone's (`crates/api/src/request_budget.rs`).
+
+Two bounds, one middleware, outermost of the route layers so a refused request costs nothing further. The **per-minute bound** is a Cloudflare Rate Limiting binding per credential class (`LIMIT_USERS`, `LIMIT_DAEMONS`, `LIMIT_HOSTS`, `LIMIT_PUBLIC` in `Skyzen.toml`), keyed by the SHA-256 of the bearer or by the connecting address, and checked before any credential is resolved — a per-colo in-memory counter that costs no storage. The **daily ceiling** is charged after the route ran, once the request's principal is known: a signed-in user (`user:<id>`, every credential the user holds shares it), a session daemon (`session:<id>`), a host (`host:<id>`), or the connecting address for everything else. The tally is a per-isolate ledger flushed to D1's `request_budgets` table (one row per principal per UTC day) on first sighting, on reaching the ceiling and every `FLUSH_EVERY` requests, so the ledger costs one D1 write per few dozen requests rather than one per request. A principal at its ceiling has its credentials put on the isolate's block list and is refused until UTC midnight without a storage read.
+
+Every refusal is a `429` problem document with a `Retry-After`: `rate-limited` names the window (60 s), `request-budget-exhausted` and `row-budget-exceeded` name the seconds to midnight. Clients treat that header as the floor of their next wait — the daemon's relay ladders, the PWA's SSE feeds, and the CLI's retries all read it — and `request-budget-exhausted` is surfaced, never worked around by switching credentials. The ceilings are `request_budget::Limits::PRODUCTION`, pinned to the manifest by a test; the rules for raising one, and for every loop that talks to the control plane, are in `AGENTS.md`.
+
 ## Provisioning
 
 A machine takes minutes to appear — Azure took over five in a live test — and a Worker request cannot wait on one, so provisioning is a queue and `POST /v1/sessions` answers `201` before any machine exists.

@@ -58,7 +58,7 @@ impl Authenticator for FlycoAuthenticator {
             let owner = api_keys::find_by_token(&db, presented)
                 .await?
                 .ok_or(ApiError::InvalidCredential)?;
-            api_keys::mark_used(&db, owner.key_id).await?;
+            api_keys::mark_used(&db, &owner).await?;
             owner.user_id
         } else {
             return Err(ApiError::InvalidCredential);
@@ -72,8 +72,10 @@ impl Authenticator for FlycoAuthenticator {
 
 /// Extracts the credential from an `Authorization: Bearer …` header.
 ///
-/// The scheme is matched case-insensitively per RFC 7235.
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+/// The scheme is matched case-insensitively per RFC 7235. Shared with the
+/// request budget, which classifies a caller by this token before anything
+/// resolves it.
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     let value = headers.get(AUTHORIZATION)?.to_str().ok()?;
     let (scheme, token) = value.split_once(char::is_whitespace)?;
     if !scheme.eq_ignore_ascii_case("bearer") {

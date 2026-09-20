@@ -1,6 +1,9 @@
 /*
  * The first-run frame (docs/ux.md §4): one card, a bar per stage, a title,
  * a body, and a footer that is the only navigation on the screen.
+ *
+ * The card is the composer's kind of surface — paper, lifted — because on
+ * this page it is the one thing to do.
  */
 .page {
   flex: 1;
@@ -15,10 +18,11 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  padding: var(--space-6);
+  padding: var(--space-6) var(--space-7);
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-raised);
 }
 
 /* ── The stage bars ──────────────────────────────────────────────────── */
@@ -35,13 +39,13 @@
   flex: 1;
   overflow: hidden;
   border-radius: var(--radius-full);
-  background: var(--color-border);
+  background: var(--color-surface-sunken);
 }
 
 /* The stage being walked is told apart from the ones ahead even on its
    first page, where the fill is still nothing. */
 .barCurrent {
-  background: var(--color-text-faint);
+  background: var(--color-border-strong);
 }
 
 .fill {
@@ -76,6 +80,8 @@
 .title {
   margin: 0;
   font-size: var(--text-xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-tight);
 }
 
 /* ── The footer ──────────────────────────────────────────────────────── */
@@ -87,33 +93,41 @@
 }
 
 .back {
+  height: 34px;
   border: none;
   background: transparent;
   border-radius: var(--radius-full);
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-md);
+  padding: 0 var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   color: var(--color-text-muted);
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .back:hover {
   color: var(--color-text);
+  background: var(--color-surface-sunken);
 }
 
 /* The one primary on the page, at the end of the footer whatever is or is
    not to its left. */
 .primary {
   margin-left: auto;
+  height: 36px;
   border: none;
   border-radius: var(--radius-full);
   background: var(--color-primary);
   color: var(--color-primary-text);
-  padding: var(--space-2) var(--space-5);
-  font-size: var(--text-md);
+  padding: 0 var(--space-5);
+  font-size: var(--text-sm);
   font-weight: var(--weight-medium);
   white-space: nowrap;
   transition:
     background var(--transition-fast),
-    opacity var(--transition-fast);
+    opacity var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .primary:hover:not(:disabled) {
@@ -127,4 +141,10 @@
 .primary:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+@media (max-width: 640px) {
+  .card {
+    padding: var(--space-5) var(--space-4);
+  }
 }
