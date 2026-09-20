@@ -21,9 +21,12 @@ use skyzen::{Body, Method, Request};
 use skyzen_services::durable::{DurableDb, DurableKv};
 use skyzen_test::mock::{InMemoryDurableDb, InMemoryDurableKv};
 
+use crate::error::ApiError;
 use crate::room::{
-    AttachResponse, Emitted, EmittedEvent, HEADER_INTERNAL, HEADER_SESSION, INTERNAL, SessionRoom,
+    AttachResponse, Emitted, EmittedEvent, SessionRoom, WORKDIR_REPLY_EVENT, WORKDIR_TIMEOUT_EVENT,
 };
+use crate::rooms::{NativeRooms, NativeUserStreams, Rooms};
+use crate::testing::room_request;
 use flyco_core::wire::EventPage;
 
 /// How long a test waits for the room to hand a command down the stream.
@@ -74,23 +77,7 @@ impl Room {
 
     /// Builds one request the way the Worker would send it.
     fn request(&self, method: Method, path: &str, body: Option<Vec<u8>>) -> Request {
-        let mut request = Request::new(body.map_or_else(Body::empty, Body::from));
-        *request.method_mut() = method;
-        *request.uri_mut() = format!("https://session-room.flyco.invalid{path}")
-            .parse()
-            .expect("a valid room URL");
-        for (name, value) in [
-            (HEADER_INTERNAL, INTERNAL.to_owned()),
-            (HEADER_SESSION, self.session.to_string()),
-        ] {
-            request
-                .headers_mut()
-                .insert(name, value.parse().expect("a valid header"));
-        }
-        request.headers_mut().insert(
-            skyzen::header::CONTENT_TYPE,
-            skyzen::header::HeaderValue::from_static("application/json"),
-        );
+        let mut request = room_request(self.session, method, path, body);
 
         // The simulator injects exactly these before dispatching; doing the
         // same here keeps this an integration test of `fetch`, not of a
@@ -126,6 +113,16 @@ impl Room {
         self.object
             .fetch()
             .go(self.request(Method::GET, path, None))
+            .await
+            .expect("the room answered")
+    }
+
+    /// Posts to a route and keeps the response, for a body that is a
+    /// stream — the held-open answer of a workdir question.
+    async fn post_streaming(&mut self, path: &str, body: Option<Vec<u8>>) -> skyzen::Response {
+        self.object
+            .fetch()
+            .go(self.request(Method::POST, path, body))
             .await
             .expect("the room answered")
     }
@@ -1189,10 +1186,11 @@ async fn a_workdir_question_is_answered_to_the_one_who_asked() {
     let mut room = Room::open().await;
     room.greet().await;
 
+    // The ask stays open: the response's head is the room taking the
+    // question, and its body ends with the answer.
     let id = flyco_core::WorkdirRequestId::generate();
-    let (status, _) = room
-        .call(
-            Method::POST,
+    let response = room
+        .post_streaming(
             "/internal/workdir",
             Some(
                 serde_json::to_vec(&ControlToDaemon::InspectWorkdir {
@@ -1205,7 +1203,12 @@ async fn a_workdir_question_is_answered_to_the_one_who_asked() {
             ),
         )
         .await;
-    assert_eq!(status, 204, "a question for a live daemon is accepted");
+    assert_eq!(
+        response.status().as_u16(),
+        200,
+        "a question for a live daemon is held open"
+    );
+    let mut waiting = response.into_body().into_sse();
 
     let asked = room.next_command().await;
     assert_eq!(
@@ -1217,12 +1220,6 @@ async fn a_workdir_question_is_answered_to_the_one_who_asked() {
             }
         }
     );
-
-    // The collect is pending until the daemon's reply lands.
-    let (status, _) = room
-        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
-        .await;
-    assert_eq!(status, 404, "an unanswered question is not found yet");
 
     let reply = flyco_core::workdir::WorkdirReply::Entries {
         listing: flyco_core::workdir::DirectoryListing {
@@ -1249,19 +1246,296 @@ async fn a_workdir_question_is_answered_to_the_one_who_asked() {
         "a workdir reply is addressed, not fanned out"
     );
 
-    let (status, body) = room
-        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
-        .await;
-    assert_eq!(status, 200, "the reply is collected");
-    let collected: flyco_core::workdir::WorkdirReply =
-        serde_json::from_slice(&body).expect("a workdir reply");
-    assert_eq!(collected, reply);
+    // The reply arrives on the request that asked — a `reply` event —
+    // and the stream ends behind it.
+    let event = tokio_select_quiet(&mut waiting, PATIENCE)
+        .await
+        .expect("the held request was answered in time")
+        .expect("the stream is still open")
+        .expect("a decodable SSE frame");
+    assert_eq!(event.event(), Some(WORKDIR_REPLY_EVENT));
+    let answered: flyco_core::workdir::WorkdirReply = event.data().expect("a workdir reply");
+    assert_eq!(answered, reply);
+    match tokio_select_quiet(&mut waiting, PATIENCE).await {
+        Some(None) => {}
+        other => panic!("the stream ended with its answer, then produced {other:?}"),
+    }
 
     // Single use: the row went with the answer.
-    let (status, _) = room
-        .call(Method::GET, &format!("/internal/workdir?id={id}"), None)
+    let key = id.to_string();
+    let db = DurableDb::new(room.db.clone());
+    let left: Option<String> =
+        skyzen::sql!(db, "SELECT json FROM workdir_replies WHERE id = {key}")
+            .fetch_scalar_optional()
+            .await
+            .expect("the reply table reads");
+    assert!(left.is_none(), "a served reply is gone");
+}
+
+#[skyzen::test]
+async fn a_workdir_question_that_outlives_its_deadline_times_out() {
+    let mut room = Room::open().await;
+    room.attach().await;
+
+    // The daemon is live but never answers, so the held request ends with
+    // the room's own deadline — twelve seconds — rather than a reply.
+    let response = room
+        .post_streaming(
+            "/internal/workdir",
+            Some(
+                serde_json::to_vec(&ControlToDaemon::InspectWorkdir {
+                    id: flyco_core::WorkdirRequestId::generate(),
+                    request: flyco_core::workdir::WorkdirRequest::Diff { repo: None },
+                })
+                .expect("serialize"),
+            ),
+        )
         .await;
-    assert_eq!(status, 404, "a collected reply is gone");
+    assert_eq!(response.status().as_u16(), 200);
+    let mut waiting = response.into_body().into_sse();
+
+    // The deadline fires at twelve seconds; watch a little longer. The
+    // stream's only named events are terminal — heartbeat comments are
+    // skipped.
+    let event = loop {
+        match tokio_select_quiet(&mut waiting, Duration::from_secs(15)).await {
+            Some(Some(item)) => {
+                let item = item.expect("a decodable SSE frame");
+                if item.event().is_some() {
+                    break item;
+                }
+            }
+            Some(None) => panic!("the stream ended without answering"),
+            None => panic!("the deadline never fired"),
+        }
+    };
+    assert_eq!(event.event(), Some(WORKDIR_TIMEOUT_EVENT));
+}
+
+#[skyzen::test]
+async fn a_workdir_reply_lands_while_the_question_is_held_open() {
+    // The same flow the way `skyzen dev` reaches it — through the
+    // namespace, which holds an object's dispatch lock only until a
+    // response's head is produced. The ask's `fetch` returns with its
+    // body still open, so the frames POST carrying the reply is a second
+    // dispatch rather than a deadlock behind the first.
+    let native = NativeRooms::new();
+    let session = SessionId::generate();
+    let daemon = NamespaceDaemon::attach(&native, session).await;
+
+    let id = flyco_core::WorkdirRequestId::generate();
+    let asking = daemon
+        .stub
+        .fetch(room_request(
+            session,
+            Method::POST,
+            "/internal/workdir",
+            Some(
+                serde_json::to_vec(&ControlToDaemon::InspectWorkdir {
+                    id,
+                    request: flyco_core::workdir::WorkdirRequest::Entries {
+                        path: "src".to_owned(),
+                    },
+                })
+                .expect("serialize"),
+            ),
+        ))
+        .await
+        .expect("the room answered");
+    assert_eq!(
+        asking.status().as_u16(),
+        200,
+        "the question was taken and held open"
+    );
+
+    let reply = flyco_core::workdir::WorkdirReply::Entries {
+        listing: flyco_core::workdir::DirectoryListing {
+            path: "src".to_owned(),
+            entries: vec![],
+            truncated: false,
+        },
+    };
+    daemon.reply(id, reply.clone()).await;
+
+    let mut waiting = asking.into_body().into_sse();
+    let event = tokio_select_quiet(&mut waiting, PATIENCE)
+        .await
+        .expect("the held request was answered in time")
+        .expect("the stream is still open")
+        .expect("a decodable SSE frame");
+    assert_eq!(event.event(), Some(WORKDIR_REPLY_EVENT));
+    let got: flyco_core::workdir::WorkdirReply = event.data().expect("a workdir reply");
+    assert_eq!(got, reply);
+}
+
+/// A daemon the test plays against a room reached through the namespace,
+/// the way the Worker's own routes reach it.
+struct NamespaceDaemon {
+    session: SessionId,
+    stub: skyzen::durable::NativeDurableObjectStub<SessionRoom>,
+    epoch: u64,
+    commands: SseStream,
+}
+
+impl NamespaceDaemon {
+    /// Attaches to the session's room and opens its command stream.
+    async fn attach(rooms: &NativeRooms, session: SessionId) -> Self {
+        let stub = rooms
+            .get_by_name(&session.to_string())
+            .expect("a room stub");
+        let attached = stub
+            .fetch(room_request(
+                session,
+                Method::POST,
+                "/internal/daemon-attach",
+                Some(
+                    serde_json::to_vec(&DaemonAttach {
+                        protocol_version: WIRE_PROTOCOL_VERSION,
+                    })
+                    .expect("serialize"),
+                ),
+            ))
+            .await
+            .expect("the room answered");
+        assert_eq!(attached.status().as_u16(), 200, "the daemon attached");
+        let attached: AttachResponse = serde_json::from_slice(
+            &attached
+                .into_body()
+                .into_bytes()
+                .await
+                .expect("a readable body"),
+        )
+        .expect("an attach response");
+        let commands = stub
+            .fetch(room_request(
+                session,
+                Method::GET,
+                &format!("/internal/commands?epoch={}", attached.epoch),
+                None,
+            ))
+            .await
+            .expect("the room answered");
+        assert_eq!(commands.status().as_u16(), 200, "the command stream opened");
+        Self {
+            session,
+            stub,
+            epoch: attached.epoch,
+            commands: commands.into_body().into_sse(),
+        }
+    }
+
+    /// Reads the next question about the checkout the room hands the daemon.
+    async fn next_workdir_question(&mut self) -> flyco_core::WorkdirRequestId {
+        loop {
+            let item = tokio_select_quiet(&mut self.commands, PATIENCE)
+                .await
+                .expect("a command arrived in time")
+                .expect("the stream is still open")
+                .expect("a decodable SSE frame");
+            let command: DaemonCommand = item.data().expect("a command envelope");
+            if let ControlToDaemon::InspectWorkdir { id, .. } = command.command {
+                return id;
+            }
+        }
+    }
+
+    /// Answers one question, the way the daemon's outbound flush does.
+    async fn reply(
+        &self,
+        id: flyco_core::WorkdirRequestId,
+        reply: flyco_core::workdir::WorkdirReply,
+    ) {
+        let answered = self
+            .stub
+            .fetch(room_request(
+                self.session,
+                Method::POST,
+                "/internal/frames",
+                Some(
+                    serde_json::to_vec(&DaemonFrames {
+                        epoch: self.epoch,
+                        from_seq: 1,
+                        ack_through: 0,
+                        frames: vec![DaemonToControl::WorkdirReply { id, reply }],
+                    })
+                    .expect("serialize"),
+                ),
+            ))
+            .await
+            .expect("the room answered");
+        assert_eq!(answered.status().as_u16(), 200, "the frames landed");
+    }
+}
+
+#[skyzen::test]
+async fn the_worker_side_returns_the_daemon_answer_from_the_held_stream() {
+    // The whole path a browser's request takes: `inspect_workdir` mints the
+    // question, the room hands it to the daemon, the daemon's reply lands
+    // as a frame, and the held stream's `reply` event comes back decoded.
+    let native = NativeRooms::new();
+    let rooms = Rooms::from_native(native.clone(), NativeUserStreams::new());
+    let session = SessionId::generate();
+    let mut daemon = NamespaceDaemon::attach(&native, session).await;
+
+    let reply = flyco_core::workdir::WorkdirReply::Entries {
+        listing: flyco_core::workdir::DirectoryListing {
+            path: "src".to_owned(),
+            entries: vec![],
+            truncated: false,
+        },
+    };
+    let (answer, ()) = futures_util::future::join(
+        rooms.inspect_workdir(
+            session,
+            flyco_core::workdir::WorkdirRequest::Entries {
+                path: "src".to_owned(),
+            },
+        ),
+        async {
+            let id = daemon.next_workdir_question().await;
+            daemon.reply(id, reply.clone()).await;
+        },
+    )
+    .await;
+    assert_eq!(answer.expect("the daemon's answer"), reply);
+}
+
+#[skyzen::test]
+async fn the_worker_side_refuses_a_question_no_daemon_can_read() {
+    let rooms = Rooms::from_native(NativeRooms::new(), NativeUserStreams::new());
+    let refused = rooms
+        .inspect_workdir(
+            SessionId::generate(),
+            flyco_core::workdir::WorkdirRequest::Diff { repo: None },
+        )
+        .await
+        .expect_err("nothing is attached to read the checkout");
+    assert!(
+        matches!(refused, ApiError::SessionDaemonOffline),
+        "the room's 503 is the offline error, got {refused:?}"
+    );
+}
+
+#[skyzen::test]
+async fn the_worker_side_times_out_with_the_held_stream() {
+    // A live daemon that never answers: the room's `timeout` event is what
+    // ends the browser's request, twelve seconds in.
+    let native = NativeRooms::new();
+    let rooms = Rooms::from_native(native.clone(), NativeUserStreams::new());
+    let session = SessionId::generate();
+    let _daemon = NamespaceDaemon::attach(&native, session).await;
+
+    let timed_out = rooms
+        .inspect_workdir(
+            session,
+            flyco_core::workdir::WorkdirRequest::Diff { repo: None },
+        )
+        .await
+        .expect_err("the daemon never answered");
+    assert!(
+        matches!(timed_out, ApiError::WorkdirTimeout),
+        "the stream's timeout is the timeout error, got {timed_out:?}"
+    );
 }
 
 #[skyzen::test]

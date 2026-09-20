@@ -231,9 +231,7 @@ impl DurableObject for SessionRoom {
             "/internal/broadcast".post(run_broadcast),
             "/internal/events".at(read_events),
             "/internal/repo-status".at(read_repo_status),
-            "/internal/workdir"
-                .post(ask_workdir)
-                .get(collect_workdir_reply),
+            "/internal/workdir".post(ask_workdir),
             "/internal/desktop/watch".at(watch_desktop),
             "/internal/desktop/takeover".post(desktop_takeover),
             "/internal/desktop/input".post(desktop_input),
@@ -1511,8 +1509,8 @@ async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
              cols INTEGER NOT NULL, \
              rows INTEGER NOT NULL)",
             // One row per answered question about the checkout, keyed by the
-            // id the Worker minted for it and deleted the moment that Worker
-            // collects it. A table rather than KV because these expire: the
+            // id the Worker minted for it and deleted the moment the held
+            // question serves it. A table rather than KV because these expire: the
             // sweep in `store_workdir_reply` needs to find rows by age, which
             // is a query and not a key.
             "CREATE TABLE IF NOT EXISTS workdir_replies (\
@@ -1672,19 +1670,25 @@ async fn repo_status(headers: &Headers, kv: &DurableKv) -> Result<Json<RepoStatu
 
 /// How long an answered workdir question is kept for its asker.
 ///
-/// The Worker that asked polls for a few seconds and then gives up, so
-/// anything older than this is an answer nobody came back for — a
-/// browser that closed the tab, or a request that timed out. Swept on the
-/// next write rather than on a timer: a room that is answering questions
-/// is exactly the room that has rows to sweep.
+/// The Worker that asked holds its request open for a few seconds and
+/// then gives up, so anything older than this is an answer nobody came
+/// back for — a browser that closed the tab, or a request that timed
+/// out. Swept on the next write rather than on a timer: a room that is
+/// answering questions is exactly the room that has rows to sweep.
 const WORKDIR_REPLY_TTL_SECONDS: u64 = 120;
 
-/// Query of the route that collects an answered workdir question.
-#[derive(Debug, Default, Deserialize, skyzen::ToSchema)]
-pub struct WorkdirCursor {
-    /// The request whose answer is being collected.
-    pub id: Option<String>,
-}
+/// How long a held workdir question waits for its answer.
+///
+/// A diff of a large tree runs git twice on the session VM, so this is
+/// generous by the standards of a REST call — and it is still bounded,
+/// because the browser is holding a request open behind it.
+const WORKDIR_DEADLINE_SECONDS: u64 = 12;
+
+/// The terminal event of a held workdir question that carries the answer.
+pub(crate) const WORKDIR_REPLY_EVENT: &str = "reply";
+
+/// The terminal event of a held workdir question the deadline ended.
+pub(crate) const WORKDIR_TIMEOUT_EVENT: &str = "timeout";
 
 /// Keeps one answer until the Worker that asked comes back for it.
 async fn store_workdir_reply(
@@ -1714,17 +1718,22 @@ async fn store_workdir_reply(
     Ok(())
 }
 
-/// Puts one question about the checkout to the session's daemon.
+/// Puts one question about the checkout to the session's daemon and holds
+/// the request open for the answer.
 ///
 /// Answers `503` when no daemon is attached, which is the whole reason
 /// this is not [`run_command`]: a browser waiting for a listing has to be
 /// told at once that there is nothing to read it, rather than waiting out
-/// the poll for an answer that is never coming.
+/// the deadline for an answer that is never coming. When there is one,
+/// the response is a stream that ends with one event — `reply` carrying
+/// the daemon's answer, or `timeout` when [`WORKDIR_DEADLINE_SECONDS`]
+/// passes first — so the Worker makes one call per question instead of
+/// polling a collect route.
 async fn ask_workdir(
     headers: Headers,
     Json(command): Json<ControlToDaemon>,
     db: DurableDb,
-) -> Outcome<NoContent> {
+) -> Outcome<Sse> {
     ask(&headers, &command, &db).await.into()
 }
 
@@ -1732,14 +1741,14 @@ async fn ask(
     headers: &Headers,
     command: &ControlToDaemon,
     db: &DurableDb,
-) -> Result<NoContent, ApiError> {
+) -> Result<Sse, ApiError> {
     internal(headers)?;
-    if !matches!(command, ControlToDaemon::InspectWorkdir { .. }) {
+    let ControlToDaemon::InspectWorkdir { id, .. } = command else {
         return Err(ApiError::Room(
             "the workdir route was given something other than a question about the checkout"
                 .to_owned(),
         ));
-    }
+    };
     ensure_schema(db)
         .await
         .map_err(|error| room_failed(&error))?;
@@ -1749,49 +1758,87 @@ async fn ask(
     queue_command(db, command)
         .await
         .map_err(|error| room_failed(&error))?;
-    Ok(NoContent)
+    Ok(crate::sse::serve(
+        WorkdirFeed {
+            db: db.clone(),
+            request: *id,
+            deadline: now_unix().saturating_add(WORKDIR_DEADLINE_SECONDS),
+            terminal_sent: false,
+        },
+        poll_workdir_reply,
+        crate::sse::HEARTBEAT,
+    ))
 }
 
-/// Collects an answer the daemon has already sent, if it has.
-///
-/// Single use: the row is deleted as it is read, because the Worker
-/// holding the browser's request is the only caller that will ever want
-/// it.
-async fn collect_workdir_reply(
-    headers: Headers,
-    Query(cursor): Query<WorkdirCursor>,
+/// The wait a held workdir question runs.
+struct WorkdirFeed {
     db: DurableDb,
-) -> Outcome<Json<WorkdirReply>> {
-    collect(&headers, cursor.id.as_deref(), &db).await.into()
+    /// The question this wait is for.
+    request: WorkdirRequestId,
+    /// The unix second the wait gives up at.
+    deadline: u64,
+    /// Whether the terminal event has been emitted — the next poll ends
+    /// the body.
+    terminal_sent: bool,
 }
 
-async fn collect(
-    headers: &Headers,
-    id: Option<&str>,
+/// One poll of a held workdir question.
+///
+/// The reply row is the rendezvous: the `frames` POST that stores the
+/// answer and the request this stream holds open are different
+/// activations of the object, and storage is the only state they share.
+/// The feed's first tick doubles as the fallback for a reply that landed
+/// between queueing the command and opening the wait — it reads the same
+/// row either way, so a reply that raced the ask is found, not missed.
+///
+/// The deadline is read before storage is, so a read that keeps failing
+/// still ends the wait with [`WORKDIR_TIMEOUT_EVENT`] on time: the Worker
+/// holds the browser's request open on this stream's word alone.
+fn poll_workdir_reply(feed: &mut WorkdirFeed) -> crate::sse::PollFn<'_> {
+    Box::pin(async move {
+        if feed.terminal_sent {
+            return crate::sse::Poll::End;
+        }
+        let expired = now_unix() >= feed.deadline;
+        let terminal = match take_workdir_reply(&feed.db, feed.request).await {
+            Ok(Some(json)) => Event::data(json).event(WORKDIR_REPLY_EVENT),
+            Ok(None) if expired => Event::data("timed out").event(WORKDIR_TIMEOUT_EVENT),
+            Ok(None) => return crate::sse::Poll::Idle,
+            Err(error) => {
+                tracing::warn!(%error, request = %feed.request, "a workdir wait could not read its reply");
+                if !expired {
+                    return crate::sse::Poll::Idle;
+                }
+                Event::data("timed out").event(WORKDIR_TIMEOUT_EVENT)
+            }
+        };
+        feed.terminal_sent = true;
+        crate::sse::Poll::Emit(vec![terminal])
+    })
+}
+
+/// Takes the stored answer to one question, if it has landed.
+///
+/// Single use: the row goes with the answer, and the reply is checked
+/// ahead of the deadline so an answer that lands on the last tick is
+/// still served.
+async fn take_workdir_reply(
     db: &DurableDb,
-) -> Result<Json<WorkdirReply>, ApiError> {
-    internal(headers)?;
-    let id =
-        id.ok_or_else(|| ApiError::Room("a workdir collection named no request".to_owned()))?;
-    ensure_schema(db)
-        .await
-        .map_err(|error| room_failed(&error))?;
-
-    let json: Option<String> = sql!(db, "SELECT json FROM workdir_replies WHERE id = {id}")
-        .fetch_scalar_optional()
-        .await
-        .map_err(|error| ApiError::Room(error.to_string()))?;
-    let Some(json) = json else {
-        return Err(ApiError::WorkdirNotAnsweredYet);
-    };
-    sql!(db, "DELETE FROM workdir_replies WHERE id = {id}")
-        .execute()
-        .await
-        .map_err(|error| ApiError::Room(error.to_string()))?;
-
-    serde_json::from_str(&json)
-        .map(Json)
-        .map_err(|error| ApiError::Room(format!("a stored workdir reply did not parse: {error}")))
+    request: WorkdirRequestId,
+) -> Result<Option<String>, skyzen_services::DurableDbError> {
+    let id = request.to_string();
+    let json: Option<String> = sql!(
+        db,
+        "SELECT json FROM workdir_replies WHERE id = {id.as_str()}"
+    )
+    .fetch_scalar_optional()
+    .await?;
+    if json.is_some() {
+        sql!(db, "DELETE FROM workdir_replies WHERE id = {id.as_str()}")
+            .execute()
+            .await?;
+    }
+    Ok(json)
 }
 
 // ── The desktop stream ──
