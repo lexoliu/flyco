@@ -51,6 +51,7 @@ async fn configured_router(db: &Db) -> Router {
         test_vendors(),
         test_clouds(),
         crate::testing::test_codespaces(),
+        crate::request_budget::Limits::PRODUCTION,
         db.clone(),
         Queue::new(InMemoryQueue::new()),
     )

@@ -35,7 +35,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 31] = [
+pub const MIGRATIONS: [&str; 33] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -67,6 +67,8 @@ pub const MIGRATIONS: [&str; 31] = [
     include_str!("../../../migrations/0030_github_grant.sql"),
     include_str!("../../../migrations/0031_session_repos.sql"),
     include_str!("../../../migrations/0032_session_computer_use.sql"),
+    include_str!("../../../migrations/0033_request_budgets.sql"),
+    include_str!("../../../migrations/0034_budget_folded_events.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -1364,6 +1366,22 @@ pub fn test_router_full(
         vendors,
         test_clouds(),
         crate::codespaces::Codespaces::Fake(codespaces),
+        crate::request_budget::Limits::PRODUCTION,
+        db,
+        queue,
+    )
+}
+
+/// The default router under request ceilings a test can reach.
+pub fn test_router_budgeted(db: Db, queue: Queue, limits: crate::request_budget::Limits) -> Router {
+    router(
+        test_config(),
+        GithubClient::Fake(TestGithub::default()),
+        crate::turnstile::TurnstileClient::Fake(TestTurnstile::passing()),
+        test_vendors(),
+        test_clouds(),
+        crate::codespaces::Codespaces::Fake(TestCodespaces::succeeding()),
+        limits,
         db,
         queue,
     )

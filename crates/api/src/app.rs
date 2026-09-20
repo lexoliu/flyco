@@ -39,6 +39,7 @@ use crate::host_room::HostAttachResponse;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::provisioning_queue::{self, ProvisioningJob};
+use crate::request_budget;
 use crate::respond::{Accepted, Created, NoContent};
 use crate::rooms::{HostRooms, Rooms, UserStreams};
 use crate::turnstile::TurnstileClient;
@@ -1099,6 +1100,7 @@ async fn settle_approval(
             &ControlToDaemon::ApprovalDecision {
                 id,
                 decision: request.decision,
+                payload: decided.payload.clone(),
             },
         )
         .await;
@@ -3852,13 +3854,16 @@ pub fn router(
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
+    limits: request_budget::Limits,
     db: Db,
     queue: Queue,
 ) -> Router {
-    configured(config, github, turnstile, vendors, clouds, codespaces)
-        .with(db)
-        .with(queue)
-        .build()
+    configured(
+        config, github, turnstile, vendors, clouds, codespaces, limits,
+    )
+    .with(db)
+    .with(queue)
+    .build()
 }
 
 /// The router without the database and queue the declared `[[database]]`
@@ -3869,6 +3874,11 @@ pub fn router(
 /// [`ClaudeClient`], the Codex routes ask for [`CodexClient`], and the one
 /// place that may renew either — the provisioning consumer — asks for
 /// [`Vendors`].
+///
+/// The request budget sits innermost of the root layers: outside every
+/// route group, so it sees each request before the group's own credential
+/// check and after the handler ran, and inside the service layers that
+/// inject the database its ledger flushes to.
 #[cfg(not(target_arch = "wasm32"))]
 fn configured(
     config: ApiConfig,
@@ -3877,9 +3887,14 @@ fn configured(
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
+    limits: request_budget::Limits,
 ) -> Route {
     with_error_handling(
         with_rooms(Route::new((routes(), frontend())))
+            .with(request_budget::RequestBudget::new(
+                request_budget::MemoryRateLimiter::new(),
+                limits,
+            ))
             .with(State(config))
             .with(State(github))
             .with(State(turnstile))
@@ -3903,9 +3918,14 @@ fn configured_from_request(
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
+    limits: request_budget::Limits,
 ) -> Route {
     with_error_handling(
         with_rooms(Route::new(routes()))
+            .with(request_budget::RequestBudget::new(
+                request_budget::BindingRateLimiter,
+                limits,
+            ))
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
             .with(State(turnstile))
@@ -3936,6 +3956,7 @@ fn with_error_handling(route: Route) -> Route {
             problem::response(
                 &flyco_core::Problem::about_blank(status.as_u16(), title, detail),
                 None,
+                None,
             )
         },
     ))
@@ -3964,6 +3985,7 @@ pub fn router_from_environment() -> Router {
             Vendors::default(),
             Clouds::default(),
             Codespaces::default(),
+            request_budget::Limits::PRODUCTION,
         )
         .build()
     }
@@ -3975,6 +3997,7 @@ pub fn router_from_environment() -> Router {
             Vendors::default(),
             Clouds::default(),
             Codespaces::default(),
+            request_budget::Limits::PRODUCTION,
         )
         .build()
     }

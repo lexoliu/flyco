@@ -32,6 +32,14 @@ const RETRY_BACKOFF: [Duration; GET_ATTEMPTS as usize] = [
 /// its answer — the control plane's own deadline sits under this.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The longest `Retry-After` a request will sleep out.
+///
+/// The per-minute window never names more than a minute or two; a `429`
+/// asking for longer is the daily budget spent, and the answer to that is
+/// the problem document in the failure — not a process asleep for an hour
+/// inside a `GET` retry.
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(120);
+
 /// A bearer-token-authenticated handle on the control plane.
 #[derive(Debug, Clone)]
 pub struct Api {
@@ -267,8 +275,9 @@ impl Api {
             .map_err(|error| refused_or_transport("GET", path, error))?;
         if !response.status().is_success() {
             let status = response.status().as_u16();
+            let wait = refused_wait(&response, status);
             let body = response.into_string().await.unwrap_or_default();
-            return Err(problem("GET", path, status, body.as_str()));
+            return Err(problem("GET", path, status, body.as_str(), wait));
         }
         Ok(response.into_sse())
     }
@@ -294,10 +303,8 @@ impl Api {
                 }
                 Err(error) => {
                     let retryable = verb.safe() && attempt <= GET_ATTEMPTS;
-                    let wait = match retry_after(&error) {
-                        Retry::After(named) if retryable => named,
-                        Retry::Default if retryable => RETRY_BACKOFF[(attempt - 1) as usize],
-                        _ => return Err(refused_or_transport(verb_name(verb), path, error)),
+                    let Some(wait) = retry_wait(&error, retryable, attempt) else {
+                        return Err(refused_or_transport(verb_name(verb), path, error));
                     };
                     tokio::time::sleep(wait).await;
                 }
@@ -360,6 +367,21 @@ enum Retry {
     After(Duration),
 }
 
+/// The wait before `attempt`'s retry, or `None` when the failure is
+/// final. A named `Retry-After` is honored up to [`MAX_RETRY_AFTER`] —
+/// a `429` asking for more is the daily budget spent, and the answer to
+/// that is the problem document, not a sleeping process.
+fn retry_wait(error: &zenwave::Error, retryable: bool, attempt: u32) -> Option<Duration> {
+    if !retryable {
+        return None;
+    }
+    match retry_after(error) {
+        Retry::After(named) if named <= MAX_RETRY_AFTER => Some(named),
+        Retry::Default => Some(RETRY_BACKOFF[(attempt - 1) as usize]),
+        _ => None,
+    }
+}
+
 /// The wait a failed request asked for, if the failure is one worth
 /// waiting out: `429` and `5xx` honor `Retry-After`, and a transport or
 /// timeout failure retries on the default ladder.
@@ -372,19 +394,35 @@ fn retry_after(error: &zenwave::Error) -> Retry {
             if !retryable {
                 return Retry::Never;
             }
-            let named = response
-                .response
-                .headers()
-                .get("retry-after")
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<u64>().ok())
-                .map(Duration::from_secs);
-            named.map_or(Retry::Default, Retry::After)
+            named_wait(&response.response).map_or(Retry::Default, Retry::After)
         }
         zenwave::Error::Transport(_) | zenwave::Error::Tls(_) | zenwave::Error::Timeout => {
             Retry::Default
         }
         _ => Retry::Never,
+    }
+}
+
+/// The `Retry-After` seconds a response named, if it named a number —
+/// the header is also allowed to be an HTTP date, which this control
+/// plane never sends.
+fn named_wait(response: &zenwave::Response) -> Option<Duration> {
+    response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_secs)
+}
+
+/// The wait a refused request reports: `Retry-After` on a `429`, where it
+/// names the budget window's wait. Other statuses either honor the header
+/// silently on the retry ladder (`5xx`) or have no wait to report.
+fn refused_wait(response: &zenwave::Response, status: u16) -> Option<Duration> {
+    if status == 429 {
+        named_wait(response)
+    } else {
+        None
     }
 }
 
@@ -394,8 +432,9 @@ async fn refused(path: &str, status: u16, response: zenwave::Response) -> crate:
     if (200..300).contains(&status) {
         return Ok(());
     }
+    let wait = refused_wait(&response, status);
     let body = response.into_string().await.unwrap_or_default();
-    Err(problem("PUT", path, status, &body))
+    Err(problem("PUT", path, status, &body, wait))
 }
 
 /// A transport-level failure: nothing was answered, so there is no problem
@@ -415,12 +454,19 @@ fn refused_or_transport(verb: &'static str, path: &str, error: zenwave::Error) -
     } = &error
     {
         let body = response.body_text.as_deref().unwrap_or("");
-        return problem(verb, path, status.as_u16(), body);
+        let wait = refused_wait(&response.response, status.as_u16());
+        return problem(verb, path, status.as_u16(), body, wait);
     }
     transport(verb, path, error)
 }
 
-fn problem(verb: &str, path: &str, status: u16, body: &str) -> Failure {
+fn problem(
+    verb: &str,
+    path: &str,
+    status: u16,
+    body: &str,
+    retry_after: Option<Duration>,
+) -> Failure {
     let code = match status {
         401 | 403 => Exit::Auth,
         404 | 409 | 410 => Exit::NotFoundOrConflict,
@@ -431,5 +477,41 @@ fn problem(verb: &str, path: &str, status: u16, body: &str) -> Failure {
     } else {
         body.trim().to_owned()
     };
-    Failure::problem(code, text)
+    Failure::refused(code, text, retry_after)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `429` failure carrying `Retry-After: <secs>`.
+    fn rate_limited(secs: u64) -> zenwave::Error {
+        let status = zenwave::StatusCode::TOO_MANY_REQUESTS;
+        let mut response = zenwave::Response::new(zenwave::Body::from_bytes("{}"));
+        *response.status_mut() = status;
+        response.headers_mut().insert(
+            "retry-after",
+            zenwave::header::HeaderValue::from_str(&secs.to_string())
+                .expect("a number is a header value"),
+        );
+        zenwave::Error::Http {
+            status,
+            message: "too many requests".to_owned(),
+            response: Box::new(zenwave::error::HttpErrorResponse {
+                response,
+                body_text: None,
+            }),
+        }
+    }
+
+    /// A `Retry-After` past [`MAX_RETRY_AFTER`] is the daily budget spent:
+    /// `retry_wait` treats it like a final failure — `None`, never a
+    /// sleep — while a wait inside the cap is honored verbatim.
+    #[test]
+    fn retry_after_over_the_cap_is_never_retried() {
+        let over = rate_limited(MAX_RETRY_AFTER.as_secs() + 1);
+        assert!(retry_wait(&over, true, 1).is_none());
+        let under = rate_limited(30);
+        assert_eq!(retry_wait(&under, true, 1), Some(Duration::from_secs(30)));
+    }
 }

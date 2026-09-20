@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { EventStream } from "./relay";
-import { isDefinitiveFailure, nextBackoffDelay } from "./events";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createSessionRelay, EventStream } from "./relay";
+import { isDefinitiveFailure, nextBackoffDelay, type UserStream } from "./events";
 import { ApiProblem, NetworkError, NotImplementedError, UnexpectedResponseError } from "./problem";
 import type { StoredEvent } from "./client";
 import type { SessionEvent } from "./wire";
@@ -27,6 +27,27 @@ function live(event: unknown, seq: number | null = null): SessionEvent {
 const started = { type: "started", harness_session_id: "h-1" };
 const usage = { type: "usage", usage: { input_tokens: 1, output_tokens: 2, estimated_cost: null, context: null } };
 const notice = { type: "spot_notice", seconds_remaining: 30 };
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+/** Lets the relay's async catch-up chain run to a settle point. */
+async function settle(rounds = 20): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+/** A shared stream that never opens — catch-up is exercised on its own. */
+function stubUserStream(): UserStream {
+  return {
+    state: () => "connecting",
+    failure: () => null,
+    subscribe: () => () => {},
+  };
+}
 
 /** Drops the timestamps, for the assertions that are only about dedup and order. */
 function eventsOf(timed: { event: unknown }[]): unknown[] {
@@ -199,6 +220,36 @@ describe("EventStream dedup across two serializations of one event", () => {
     expect(
       stream.ingestCatchUp([stored(1, { event: { turn_id: "t-2", type: "turn_started" }, type: "harness" })]),
     ).toHaveLength(1);
+  });
+});
+
+describe("createSessionRelay catch-up", () => {
+  it("fails the relay when the control plane keeps answering more: true past the page cap", async () => {
+    // `more: true` forever is the server's bug, but a client that walks
+    // pages at line rate would spend the day's request budget on it — the
+    // cap turns the walk into a failure the page can show.
+    let calls = 0;
+    vi.stubGlobal("fetch", () => {
+      calls += 1;
+      const page = {
+        events: [stored(calls, notice)],
+        more: true,
+      };
+      return Promise.resolve(
+        new Response(JSON.stringify(page), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    });
+    const relay = createSessionRelay(SESSION, { stream: stubUserStream() });
+    await settle();
+    expect(relay.state()).toBe("failed");
+    const failure = relay.failure();
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("without advancing");
+    expect(calls).toBe(200);
+    relay.dispose();
   });
 });
 

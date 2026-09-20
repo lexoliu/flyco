@@ -53,18 +53,18 @@ export default function RepoStatusPanel(props: {
 
   return (
     <section class={styles.panel} aria-label="Repository status">
-      <h2>{props.devMachine ? "Repository" : "Repositories"}</h2>
+      <h2 class={styles.heading}>{props.devMachine ? "Repository" : "Repositories"}</h2>
       <ProblemNotice error={status.error} />
       <Show when={checkouts().length > 0}>
         <ul class={styles.facts}>
           <For each={checkouts()}>
             {(checkout) => (
               <li>
-                <span class={styles.state} data-state={checkout.dirty ? "dirty" : "running"}>
+                <span class={styles.checkoutState} data-state={checkout.dirty ? "dirty" : "running"}>
                   {nameOf(checkout.dir)} · {checkout.dirty ? "Dirty" : "Clean"}
                 </span>
                 <Show when={checkout.summary !== ""}>
-                  <pre class={styles.facts}>{checkout.summary}</pre>
+                  <pre class={styles.summary}>{checkout.summary}</pre>
                 </Show>
               </li>
             )}

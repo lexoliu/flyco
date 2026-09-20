@@ -28,5 +28,10 @@ tokio.workspace = true
 futures-util.workspace = true
 url.workspace = true
 
+[dev-dependencies]
+# `start_paused`/`advance`: the reconnect-ladder tests measure virtual
+# waits instead of sleeping real seconds.
+tokio = { workspace = true, features = ["test-util"] }
+
 [lints]
 workspace = true

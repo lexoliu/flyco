@@ -1,0 +1,9 @@
+{% if approved -%}
+[flyco approval notice] While this machine was suspended for idleness, the user approved the `{{ tool }}` call that was waiting for permission:
+{{ input }}
+The machine was started again for it, but the call itself was lost with the process that asked. Run it again exactly as above — it is already approved and will not ask twice.
+{%- else -%}
+[flyco approval notice] While this machine was suspended for idleness, the user denied the `{{ tool }}` call that was waiting for permission:
+{{ input }}
+Do not run it. Carry on with what you can do without it, or ask the user what they want instead.
+{%- endif %}

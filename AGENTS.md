@@ -14,31 +14,90 @@ the PWA alone:
   the web UI; the `flyco` CLI and `flycod` are agent/daemon surfaces, not
   user prerequisites.
 
-## Operating flyco: public interfaces only
+## Platform invariant: the control plane runs on a free-plan quota
 
-Mutating flyco state goes through the same public surfaces a user has —
-the web GUI (via the host's dedicated browser tool, never computer-use) or
-the `flyco` CLI. Never call API endpoints directly (`curl POST /v1/...`),
-and never write the database directly (`wrangler d1 execute` with
-INSERT/UPDATE/DELETE). Direct calls bypass the product's own invariants —
-a mislabelled harness-account row came from a raw
-`POST /v1/harness-accounts`.
+The control plane (`crates/api`) is one Cloudflare Worker on the free plan.
+Its ceilings are **account-wide and daily**: 100k Worker requests, 100k
+Durable Object requests, 5M Durable Object row reads, 100k D1 row writes,
+100k KV reads. When one is spent, every session of every user is down
+until UTC midnight. Four incidents have done exactly that, each through
+one client loop running at line rate: a catalog computed inside the
+request (#174), a CLI gap-fill re-reading a page every 400 ms (#288), two
+daemons ping-ponging `relay/attach` at 3 req/s (#336), and a Devin session
+that spent the day's Worker usage (#342).
 
-## Deployment: CI only
+The control plane now defends itself — `crates/api/src/request_budget.rs`
+charges every request to a principal (user, session daemon, host, or
+address), refuses a principal over its per-minute limit before any storage
+is read, and refuses one over its daily ceiling until midnight, always with
+`429` and a `Retry-After` header; `row_budget.rs` does the same for
+Durable Object row reads. Those are circuit breakers for the bug we have
+not written yet. The rules below are what keep us from writing it.
 
-Production deploys run in GitHub Actions (`.github/workflows/deploy.yml`),
-triggered by pushes to `dev`. The job checks out the `dev` tip itself, so
-production always runs merged code.
+### Rules for code that talks to the control plane
 
-- **Never run `skyzen deploy`, `wrangler deploy`, or `wrangler pages deploy`
-  against production from a local checkout or worktree.** Those commands
-  ship whatever is in the working directory — uncommitted experiments, a
-  stale branch, another session's in-flight work — and the last deploy wins.
-  That race has already overwritten a production deployment once.
-- Local commands are unaffected: `skyzen dev`, `skyzen build`, `cargo
-  build/test`, `bun run build`, and `skyzen deploy --dry-run` are all fine.
-- To redeploy production without a code change, dispatch the workflow:
-  `gh workflow run deploy.yml`. It still deploys only the `dev` tip.
-- Cloudflare credentials for the workflow live in GitHub secrets
-  (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `FLYCO_DEPLOY_ENV`), not
-  in this repository.
+Every client — `flycod` (`crates/daemon`), the `flyco` CLI (`crates/cli`),
+the PWA (`frontend/`), and anything new — obeys these, and a PR that adds
+or changes a loop says in its description which line satisfies each:
+
+1. **Every reconnect or retry loop backs off**: capped exponential with
+   full jitter (`crates/daemon/src/control/wire.rs::backoff` is the
+   reference), and the ladder resets only after a connection *held* for
+   `ATTACH_STABLE`, never on the open — a stream that opens and dies in a
+   second must climb the ladder, not stay at its floor.
+2. **`429` is a wait, not a transport error.** Read `Retry-After` and
+   sleep at least that long before the next request to that route. A
+   `request-budget-exhausted` problem names a wait of hours: stop, surface
+   it to the user, do not switch credentials or hosts to get around it.
+3. **Every pagination walk has a page cap and stops when the cursor does
+   not advance.** A server answering `more: true` for ever must cost a
+   bounded number of requests.
+4. **Nothing polls the control plane on a timer without an end.** A poll
+   states its interval (never under two seconds) and the condition or
+   deadline that stops it. Liveness is the server's SSE `ping`, never a
+   client request.
+5. **One connection per stream, one daemon per session.** A second
+   `flycod` on a machine exits (the lock file); a second `--follow` on the
+   same session is a bug.
+6. **Frames and events are batched**, never one request per item.
+
+### Rules for the control plane itself
+
+1. A new route's doc comment states what it costs per call: D1 statements
+   (reads and writes), KV operations, Durable Object calls, R2 operations,
+   subrequests. A cost that scales with data size says so.
+2. **No unconditional write per request.** A stamp that only needs to be
+   right to the hour is written once an hour (`api_keys::mark_used` is the
+   pattern).
+3. A Durable Object read that can touch many rows bills
+   `row_budget::charge_reads`; a one-row keyed lookup does not.
+4. Work that is periodic runs in the minute cron under a CPU cap
+   (`metering::MAX_WINDOWS_PER_SWEEP` is the pattern), never inside a
+   request, and never fans out one request into one call per row.
+5. The ceilings live in one place — `request_budget::Limits::PRODUCTION`,
+   pinned to `Skyzen.toml` by a test — and a PR that raises one carries
+   the arithmetic: what a client at the new limit spends in a day, against
+   the account's 100k.
+
+### Rules for an agent driving the deployed control plane
+
+`dev.flyco.dev` is production for quota purposes. An agent — Devin,
+Claude, Codex, any of them — that uses it during a task:
+
+1. Drives sessions through the `flyco` CLI (`skills/flyco/SKILL.md`),
+   never a shell loop of `curl`, `flyco session get`, or the events route.
+   Waiting is `flyco session wait --timeout` or `flyco run --timeout`, one
+   process per session, and every wait names its timeout.
+2. Never runs a load test, a soak test, a benchmark, or an end-to-end loop
+   against the deployed control plane. Behaviour is tested against the
+   in-process router (`cargo nextest run -p flyco-api`) or a local
+   `workerd`; a live check is one session, one prompt, one wait.
+3. On a `429`, stops. Reads `Retry-After`, reports the problem type and
+   the wait, and does not retry, rotate credentials, or open another
+   session to continue.
+4. Never starts a second daemon on a session's machine and never leaves a
+   `--follow`, a `wait`, or a `run` running after its task ends.
+5. When traffic looks wrong — a session answering slowly, a `502`, a burst
+   in `wrangler tail` — stops the client first (stop the session, destroy
+   the machine, kill the process) and diagnoses second. Workers Logs keep
+   the evidence; a loop left running to "observe it" spends the day.

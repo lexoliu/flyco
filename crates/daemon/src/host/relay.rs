@@ -183,6 +183,9 @@ struct Pump<J, A> {
     /// is what makes "again" cheap: an entry leaves when the answer is
     /// confirmed stored, which is when the row is gone for good.
     handled: HashSet<u64>,
+    /// The wait the control plane named on the last refused batch,
+    /// honoured by the reconnect that follows (issue #342).
+    retry_hint: Option<Duration>,
 }
 
 /// Why one attachment ended.
@@ -215,6 +218,7 @@ where
         outstanding: VecDeque::new(),
         pending: VecDeque::new(),
         handled: HashSet::new(),
+        retry_hint: None,
     };
     // How far down the room's command log this machine has applied —
     // global across attachments, exactly as the log's sequences are.
@@ -234,7 +238,8 @@ where
                 if fatal_attach(&error) {
                     return Err(error);
                 }
-                let wait = backoff(attempt);
+                // A refusal that names its wait is honoured over the ladder.
+                let wait = backoff(attempt).max(error.retry_after().unwrap_or_default());
                 tracing::warn!(%error, ?wait, attempt, "could not reach this machine's room");
                 attempt = attempt.saturating_add(1);
                 tokio::time::sleep(wait).await;
@@ -259,7 +264,7 @@ where
                 } else {
                     attempt = 0;
                 }
-                let wait = backoff(attempt);
+                let wait = backoff(attempt).max(pump.retry_hint.take().unwrap_or_default());
                 tracing::warn!(
                     ?wait,
                     attempt,
@@ -495,6 +500,7 @@ impl<J: Jobs, A: JobResults + HostTransport> Pump<J, A> {
                 .collect(),
         };
         if let Err(error) = self.api.frames(&batch).await {
+            self.retry_hint = error.retry_after();
             tracing::warn!(
                 %error,
                 frames = batch.frames.len(),

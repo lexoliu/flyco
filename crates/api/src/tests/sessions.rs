@@ -2,10 +2,10 @@
 
 use flyco_core::wire::{ApprovalDecision, ApprovalPayload};
 use flyco_core::{
-    ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser, DecideApproval,
-    EnvDocument, EnvEntry, HarnessKind, MachineOrigin, MachineState, ModelChoice, ModelOption,
-    Problem, ProviderAccountId, Runtime, SessionDetail, SessionId, SessionState, SessionSummary,
-    SpendKind, UpdateEnv, UpdateMe, UpdateSession, Usd, builtin_models,
+    ApprovalId, ApprovalState, ApprovalView, BudgetStage, CreateSession, CurrentUser,
+    DecideApproval, EnvDocument, EnvEntry, HarnessKind, MachineOrigin, MachineState, ModelChoice,
+    ModelOption, Problem, ProviderAccountId, Runtime, SessionDetail, SessionId, SessionState,
+    SessionSummary, SpendKind, UpdateEnv, UpdateMe, UpdateSession, Usd, builtin_models,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -1098,6 +1098,112 @@ async fn an_idle_sessions_machine_is_suspended_with_its_disk_kept(_ctx: TestCont
             .summary
             .state,
         SessionState::Interrupted
+    );
+}
+
+/// Backdates a pending approval so it has waited as long as the idle
+/// threshold: the blocked turn's own clock (issue #355).
+async fn waiting_since_the_cutoff(db: &Db, approval: ApprovalId) {
+    let cutoff = crate::clock::now_unix() - flyco_core::SUSPEND_AFTER_IDLE_SECS - 1;
+    sql!(
+        db,
+        "UPDATE approvals SET created_at_unix = {cutoff} WHERE id = {approval}"
+    )
+    .execute()
+    .await
+    .expect("backdate the approval");
+}
+
+async fn blocked_on_an_approval(db: &Db, session: SessionId) -> ApprovalId {
+    sessions::record_activity(db, session, flyco_core::SessionActivity::Working)
+        .await
+        .expect("a turn is in flight");
+    approvals::raise(
+        db,
+        session,
+        &ApprovalPayload::ToolUse {
+            tool: "Bash".to_owned(),
+            input: serde_json::json!({ "command": "git push" }),
+        },
+    )
+    .await
+    .expect("the turn asks")
+}
+
+#[skyzen::test]
+async fn a_turn_blocked_on_an_approval_past_the_idle_threshold_is_suspended(
+    _ctx: TestContext,
+    db: Db,
+) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    let approval = blocked_on_an_approval(&db, session).await;
+    idle(&db, session).await;
+    waiting_since_the_cutoff(&db, approval).await;
+
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    let detail = sessions::find(&db, user.id, session)
+        .await
+        .expect("read the session");
+    assert_eq!(
+        detail.summary.state,
+        SessionState::Interrupted,
+        "an agent that has waited on the user this long is not working"
+    );
+    assert_eq!(
+        detail.summary.interrupted_reason,
+        Some(flyco_core::InterruptedReason::Suspended)
+    );
+    assert_eq!(
+        machines::for_session(&db, session)
+            .await
+            .expect("read the machine")
+            .expect("the session has one")
+            .state,
+        MachineState::Deallocated,
+        "compute released, disk kept"
+    );
+}
+
+#[skyzen::test]
+async fn a_turn_blocked_on_a_fresh_approval_keeps_its_machine(_ctx: TestContext, db: Db) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    blocked_on_an_approval(&db, session).await;
+    // The turn is old, the question is not.
+    idle(&db, session).await;
+
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Active,
+        "the blocked turn's clock is the approval's age, not the turn's"
     );
 }
 

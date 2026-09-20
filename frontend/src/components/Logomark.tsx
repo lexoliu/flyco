@@ -57,6 +57,18 @@ function iconMark(icon: { title: string; path: string }): Mark {
   return { title: icon.title, viewBox: "0 0 24 24", paths: [icon.path] };
 }
 
+/**
+ * flyco's own mark: the paper dart from the app icon, in ink.
+ *
+ * One path rather than the icon's two facets, because at wordmark size a
+ * second tone is a smudge; the silhouette is what reads.
+ */
+export const FLYCO_MARK: Mark = {
+  title: "flyco",
+  viewBox: "0 0 192 192",
+  paths: ["M40 108 L152 44 L112 152 L96 112 Z"],
+};
+
 export const GITHUB_MARK: Mark = iconMark(siGithub);
 export const ANTHROPIC_MARK: Mark = iconMark(siAnthropic);
 export const OPENAI_MARK: Mark = assetMark("OpenAI", openaiAsset);
@@ -98,13 +110,15 @@ export interface LogomarkProps {
    * assistive technology; one standing alone carries the name itself.
    */
   labelled?: boolean | undefined;
+  /** Extra classes, for a caller that sizes the mark itself. */
+  class?: string | undefined;
 }
 
 export default function Logomark(props: LogomarkProps) {
   const size = () => props.size ?? 14;
   return (
     <svg
-      class={styles.mark}
+      class={props.class === undefined ? styles.mark : `${styles.mark} ${props.class}`}
       viewBox={props.mark.viewBox}
       height={size()}
       fill="currentColor"

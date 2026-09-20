@@ -27,6 +27,53 @@ use crate::{Failure, Outcome};
 /// of quiet means the bytes stopped, not that nothing happened.
 const SILENCE: core::time::Duration = core::time::Duration::from_secs(60);
 
+/// Shortest wait before a reconnect attempt.
+const BACKOFF_MIN: core::time::Duration = core::time::Duration::from_secs(1);
+
+/// Longest wait between reconnect attempts.
+const BACKOFF_MAX: core::time::Duration = core::time::Duration::from_secs(60);
+
+/// How long a stream must hold before its drop resets the reconnect
+/// ladder.
+///
+/// A stream that dies moments after opening was never really established —
+/// most often the route accepts `GET /v1/events` and closes the body — and
+/// its reconnect climbs the ladder rather than re-arming at the floor;
+/// without that, a server that hangs up on every attach is re-requested at
+/// line rate forever. One that outlived this was a real drop, and a real
+/// drop deserves a prompt reconnect. The daemon's `ATTACH_STABLE` rule,
+/// `crates/daemon/src/control/wire.rs`.
+const STABLE: core::time::Duration = core::time::Duration::from_secs(10);
+
+/// How many `429`s one connect waits out before the refusal is the
+/// caller's to report.
+const REFUSALS: u32 = 3;
+
+/// The most pages one walk fetches before it calls the walk stuck.
+///
+/// A server that answers `more` forever — or hands back a cursor that
+/// never moves — must cost a bounded number of requests, never an
+/// unbounded walk at line rate.
+pub const MAX_PAGES: u32 = 200;
+
+/// The wait before the `attempt`-th reconnect.
+///
+/// Capped exponential without jitter: one CLI process follows a stream for
+/// one person, so there is no herd to spread, and the cap keeps a long
+/// outage from turning into an hour of silence.
+fn backoff(attempt: u32) -> core::time::Duration {
+    BACKOFF_MIN
+        .saturating_mul(1_u32 << attempt.min(6))
+        .min(BACKOFF_MAX)
+}
+
+/// The refusal every bounded page walk ends in: the cap was reached, or a
+/// page answered `more` without advancing the cursor.
+#[must_use]
+pub fn paging_stalled() -> Failure {
+    Failure::transport("the control plane kept paging without advancing")
+}
+
 /// One item off a session's event flow.
 ///
 /// A consumer reading `.event()` gets a typed [`ClientEvent`] in both
@@ -87,6 +134,11 @@ pub struct Follow<'a> {
     delivered_seq: u64,
     /// Items a gap-fill produced, delivered before the live stream resumes.
     pending: std::collections::VecDeque<Item>,
+    /// Where the reconnect ladder stands: how many drops have been backed
+    /// off in a row. A stream that held [`STABLE`] resets it.
+    attempt: u32,
+    /// When the current stream opened, for the [`STABLE`] test.
+    opened_at: Option<tokio::time::Instant>,
 }
 
 impl core::fmt::Debug for Follow<'_> {
@@ -116,6 +168,8 @@ impl<'a> Follow<'a> {
             buffer_cursor: Some(0),
             delivered_seq: 0,
             pending: std::collections::VecDeque::new(),
+            attempt: 0,
+            opened_at: None,
         }
     }
 
@@ -154,31 +208,65 @@ impl<'a> Follow<'a> {
                     .await
                     .unwrap_or_default()
             };
-            match incoming {
-                Some(Ok(event)) => {
-                    if let Some(id) = event.id().and_then(|raw| raw.parse().ok()) {
-                        self.buffer_cursor = Some(id);
-                    }
-                    let envelope: SessionEvent = event.data().map_err(|error| {
-                        Failure::transport(format!("an event failed to parse: {error}"))
-                    })?;
-                    self.deliver(envelope).await?;
+            if let Some(Ok(event)) = incoming {
+                if let Some(id) = event.id().and_then(|raw| raw.parse().ok()) {
+                    self.buffer_cursor = Some(id);
                 }
-                // The stream ended, errored, or went quiet: drop it and
-                // reconnect — the buffer cursor carries the position.
-                _ => self.stream = None,
+                let envelope: SessionEvent = event.data().map_err(|error| {
+                    Failure::transport(format!("an event failed to parse: {error}"))
+                })?;
+                self.deliver(envelope).await?;
+            } else {
+                // The stream ended, errored, or went quiet: drop it, climb
+                // the reconnect ladder, and open again — the buffer cursor
+                // carries the position.
+                self.stream = None;
+                if self
+                    .opened_at
+                    .take()
+                    .is_some_and(|at| at.elapsed() >= STABLE)
+                {
+                    self.attempt = 0;
+                }
+                let wait = backoff(self.attempt);
+                self.attempt = self.attempt.saturating_add(1);
+                tokio::time::sleep(wait).await;
             }
         }
     }
 
     /// Opens the stream at the buffer cursor.
+    ///
+    /// A `429` names its wait: a `Retry-After` inside
+    /// [`crate::client::MAX_RETRY_AFTER`] is slept out and retried, at most
+    /// [`REFUSALS`] times in a row — past that, or on a longer wait, the
+    /// failure propagates for the caller to report.
     async fn connect(&mut self) -> Outcome<()> {
         use core::fmt::Write as _;
         let mut path = format!("/v1/events?session={}", self.session);
         if let Some(after) = self.buffer_cursor {
             write!(path, "&after={after}").expect("a String cannot refuse a write");
         }
-        self.stream = Some(self.api.sse(&path).await?);
+        let mut refused = 0_u32;
+        let stream = loop {
+            match self.api.sse(&path).await {
+                Ok(stream) => break stream,
+                Err(failure) => {
+                    let wait = failure
+                        .retry_after
+                        .filter(|wait| *wait <= crate::client::MAX_RETRY_AFTER);
+                    match wait {
+                        Some(wait) if refused < REFUSALS => {
+                            refused += 1;
+                            tokio::time::sleep(wait).await;
+                        }
+                        _ => return Err(failure),
+                    }
+                }
+            }
+        };
+        self.opened_at = Some(tokio::time::Instant::now());
+        self.stream = Some(stream);
         Ok(())
     }
 
@@ -204,7 +292,9 @@ impl<'a> Follow<'a> {
             // or past it are already on the wire — not at the tail of the
             // recorded history, which on a long session never arrives inside
             // the gap and would otherwise page the same window forever.
+            let mut paged = 0_u32;
             'pages: loop {
+                let before = self.delivered_seq;
                 for stored in page.events {
                     if stored.seq <= self.delivered_seq {
                         continue;
@@ -217,6 +307,15 @@ impl<'a> Follow<'a> {
                 }
                 if !page.more {
                     break;
+                }
+                // A `more` page that moved nothing — and a walk past the
+                // page cap — is a server paging forever, not a gap.
+                if self.delivered_seq == before {
+                    return Err(paging_stalled());
+                }
+                paged += 1;
+                if paged >= MAX_PAGES {
+                    return Err(paging_stalled());
                 }
                 page = events(self.api, self.session, self.delivered_seq).await?;
             }
@@ -240,24 +339,31 @@ pub async fn events(api: &Api, session: SessionId, after: u64) -> Outcome<EventP
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::time::Instant;
 
-    /// Answers every `GET` with the same canned page, counting requests:
-    /// the gap-fill is expected to ask for each window once.
-    async fn serve(page: EventPage) -> (url::Url, Arc<AtomicUsize>) {
+    /// The request log every stub writes: the instant each request
+    /// arrived — the paused clock's instant under `start_paused`, so a
+    /// test measures the waits between requests rather than guessing them.
+    type Requests = Arc<Mutex<Vec<Instant>>>;
+
+    /// Answers the n-th request with `respond(n)`, a raw HTTP response.
+    async fn serve_raw(
+        respond: impl Fn(usize) -> String + Send + Sync + 'static,
+    ) -> (url::Url, Requests) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind a stub server");
         let port = listener.local_addr().expect("a bound port").port();
-        let asked = Arc::new(AtomicUsize::new(0));
-        let counter = Arc::clone(&asked);
+        let requests: Requests = Arc::new(Mutex::new(Vec::new()));
+        let log = Arc::clone(&requests);
         tokio::spawn(async move {
-            let body = serde_json::to_vec(&page).expect("a page serializes");
+            let mut n = 0_usize;
             while let Ok((mut socket, _)) = listener.accept().await {
-                counter.fetch_add(1, Ordering::Relaxed);
-                let body = body.clone();
+                log.lock().expect("the request log").push(Instant::now());
+                let answer = respond(n);
+                n += 1;
                 tokio::spawn(async move {
                     let mut request = Vec::new();
                     let mut chunk = [0_u8; 1024];
@@ -267,20 +373,83 @@ mod tests {
                             Ok(read) => request.extend_from_slice(&chunk[..read]),
                         }
                     }
-                    let head = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
-                         content-length: {}\r\nconnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    let _ = socket.write_all(head.as_bytes()).await;
-                    let _ = socket.write_all(&body).await;
+                    let _ = socket.write_all(answer.as_bytes()).await;
                 });
             }
         });
         (
             url::Url::parse(&format!("http://127.0.0.1:{port}")).expect("a URL"),
-            asked,
+            requests,
         )
+    }
+
+    /// Answers every `GET` with the same canned page.
+    async fn serve(page: EventPage) -> (url::Url, Requests) {
+        let body = serde_json::to_string(&page).expect("a page serializes");
+        serve_raw(move |_| {
+            format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                 content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+        })
+        .await
+    }
+
+    /// A `200 text/event-stream` answer carrying `body` — an empty one
+    /// opens the stream and closes it at once.
+    fn sse_response(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// A `429` naming `retry_after` seconds, with a problem document.
+    fn refused_response(retry_after: u64) -> String {
+        let body = serde_json::json!({
+            "type": "https://flyco.dev/problems/request-budget-exhausted",
+            "title": "request budget exhausted",
+            "status": 429,
+        })
+        .to_string();
+        format!(
+            "HTTP/1.1 429 Too Many Requests\r\n\
+             content-type: application/problem+json\r\n\
+             retry-after: {retry_after}\r\n\
+             content-length: {}\r\nconnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Follows `session` forever, answering the first failure `next()`
+    /// sees — which lets a test tell "reconnecting" from "gave up".
+    fn drive(api: Api, session: SessionId) -> tokio::task::JoinHandle<Failure> {
+        tokio::spawn(async move {
+            let mut follow = Follow::new(&api, session);
+            loop {
+                if let Err(failure) = follow.next().await {
+                    return failure;
+                }
+            }
+        })
+    }
+
+    /// Advances the paused clock in small steps until `requests` logs its
+    /// n-th arrival — the follower sleeps, wakes, and asks; the stub
+    /// answers — giving each task its scheduler turns between steps.
+    async fn until(requests: &Requests, n: usize) {
+        for _ in 0..400 {
+            if requests.lock().expect("the request log").len() >= n {
+                return;
+            }
+            tokio::time::advance(core::time::Duration::from_millis(50)).await;
+            for _ in 0..50 {
+                tokio::task::yield_now().await;
+            }
+        }
+        panic!("request {n} never arrived");
     }
 
     /// A live envelope whose `seq` lands inside the page the gap-fill
@@ -319,12 +488,128 @@ mod tests {
         .expect("the gap-fill must end")
         .expect("the page is well-formed");
         assert_eq!(follow.delivered_seq, 8);
-        assert_eq!(asked.load(Ordering::Relaxed), 1);
+        assert_eq!(asked.lock().expect("the request log").len(), 1);
         let seqs: Vec<Option<u64>> = follow
             .pending
             .iter()
             .map(super::Item::session_seq)
             .collect();
         assert_eq!(seqs, [Some(5), Some(6), Some(7), Some(8)]);
+    }
+
+    /// A server that accepts `GET /v1/events` and closes the body at once
+    /// must not be re-requested at line rate: every dead stream climbs the
+    /// ladder — the second request waits out `BACKOFF_MIN`, the fourth a
+    /// 4-second rung — and nothing ever held `STABLE` to reset it.
+    #[tokio::test(start_paused = true)]
+    async fn reconnects_climb_the_backoff_ladder() {
+        let (base, requests) = serve_raw(|_| sse_response("")).await;
+        let api = Api::new(base, None);
+        let driver = drive(api, SessionId::generate());
+        until(&requests, 4).await;
+        assert!(!driver.is_finished(), "a dead stream is not a failure");
+        driver.abort();
+
+        let times = requests.lock().expect("the request log").clone();
+        assert!(times.len() >= 4);
+        let gaps: Vec<core::time::Duration> = times
+            .windows(2)
+            .map(|pair| pair[1].duration_since(pair[0]))
+            .collect();
+        for (rung, gap) in [1_u64, 2, 4].iter().zip(&gaps) {
+            let rung = core::time::Duration::from_secs(*rung);
+            assert!(
+                *gap >= rung && *gap < rung + core::time::Duration::from_secs(1),
+                "gap {gap:?} missed its {rung:?} rung",
+            );
+        }
+    }
+
+    /// A `429` carrying `Retry-After` is a wait, not a failure: the
+    /// reconnect lands after the named seconds and the caller sees no
+    /// error. The stream that then opens and dies climbs the ladder on
+    /// its own terms — `BACKOFF_MIN`, not another named wait.
+    #[tokio::test(start_paused = true)]
+    async fn retry_after_is_slept_out() {
+        let (base, requests) = serve_raw(|n| {
+            if n == 0 {
+                refused_response(2)
+            } else {
+                sse_response("")
+            }
+        })
+        .await;
+        let api = Api::new(base, None);
+        let driver = drive(api, SessionId::generate());
+        until(&requests, 3).await;
+        assert!(!driver.is_finished(), "the 429 must not surface");
+        driver.abort();
+
+        let times = requests.lock().expect("the request log").clone();
+        let retry = times[1].duration_since(times[0]);
+        assert!(
+            retry >= core::time::Duration::from_secs(2)
+                && retry < core::time::Duration::from_secs(4),
+            "the 429's wait was {retry:?}",
+        );
+        let gap = times[2].duration_since(times[1]);
+        assert!(gap >= BACKOFF_MIN, "the dead stream's wait was {gap:?}");
+    }
+
+    /// A `Retry-After` past `MAX_RETRY_AFTER` is the daily budget spent:
+    /// `next()` hands the caller the problem document and the named wait
+    /// instead of sleeping it out — one request, no sleeps. Real time: the
+    /// failure is immediate, and a paused clock would auto-advance past the
+    /// request timeout while the socket was still in flight.
+    #[tokio::test]
+    async fn budget_exhausted_propagates() {
+        let (base, requests) = serve_raw(|_| refused_response(3600)).await;
+        let api = Api::new(base, None);
+        let mut follow = Follow::new(&api, SessionId::generate());
+        let failure = follow
+            .next()
+            .await
+            .expect_err("a 3600s wait is not slept out");
+        assert_eq!(failure.code, crate::Exit::Problem, "{}", failure.text);
+        assert_eq!(
+            failure.retry_after,
+            Some(core::time::Duration::from_secs(3600))
+        );
+        assert_eq!(requests.lock().expect("the request log").len(), 1);
+    }
+
+    /// A page that keeps answering `more` while repeating the same window
+    /// is a server paging forever: the gap-fill fails with a transport
+    /// failure inside `MAX_PAGES` requests — here on the second, the one
+    /// that moved nothing.
+    #[tokio::test]
+    async fn gap_fill_fails_when_pages_stop_advancing() {
+        let session = SessionId::generate();
+        let page = EventPage {
+            events: (5..=10)
+                .map(|seq| StoredEvent {
+                    seq,
+                    event: serde_json::json!({"kind": "anything"}),
+                    at_unix: 0,
+                })
+                .collect(),
+            more: true,
+        };
+        let (base, requests) = serve(page).await;
+        let api = Api::new(base, None);
+        let mut follow = Follow::new(&api, session).after(4);
+        let failure = follow
+            .deliver(SessionEvent {
+                session,
+                seq: Some(100),
+                at_unix: 0,
+                event: ClientEvent::Started {
+                    harness_session_id: "h".to_owned(),
+                },
+            })
+            .await
+            .expect_err("a window that never advances is a stall");
+        assert_eq!(failure.code, crate::Exit::Transport);
+        assert_eq!(requests.lock().expect("the request log").len(), 2);
     }
 }
