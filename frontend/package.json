@@ -11,9 +11,13 @@
     "test:watch": "NODE_OPTIONS=--no-experimental-webstorage vitest",
     "typecheck": "tsc --noEmit && tsc --noEmit -p functions/tsconfig.json",
     "api:generate": "openapi-typescript ../openapi.json -o src/api/schema.d.ts",
-    "api:check": "bun run scripts/check-api-schema.ts"
+    "api:check": "bun run scripts/check-api-schema.ts",
+    "preview:api": "bun run scripts/preview-api.ts",
+    "dev:preview": "VITE_API_BASE=http://localhost:8788 vite"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@solidjs/router": "^0.15.3",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",

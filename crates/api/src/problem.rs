@@ -9,7 +9,7 @@ use core::fmt;
 
 use flyco_core::Problem;
 use flyco_core::problem::CONTENT_TYPE as PROBLEM_CONTENT_TYPE;
-use skyzen::header::{CONTENT_TYPE, HeaderValue, WWW_AUTHENTICATE};
+use skyzen::header::{CONTENT_TYPE, HeaderValue, RETRY_AFTER, WWW_AUTHENTICATE};
 use skyzen::{Body, Request, Responder, Response, StatusCode};
 
 use crate::error::ApiError;
@@ -36,15 +36,28 @@ impl Challenge {
 ///
 /// Falls back to 500 if the document carries a status code HTTP does not
 /// know — an impossible state that must still not panic mid-response.
+///
+/// `retry_after` is the RFC 9110 §10.2.3 header a refusal that asks the
+/// caller to wait carries, in seconds; every `429` this control plane
+/// answers names one.
 #[must_use]
-pub fn response(problem: &Problem, challenge: Option<Challenge>) -> Response {
+pub fn response(
+    problem: &Problem,
+    challenge: Option<Challenge>,
+    retry_after: Option<u64>,
+) -> Response {
     let mut response = Response::new(Body::empty());
-    write(&mut response, problem, challenge);
+    write(&mut response, problem, challenge, retry_after);
     response
 }
 
 /// Overwrites `response` with a problem document.
-pub fn write(response: &mut Response, problem: &Problem, challenge: Option<Challenge>) {
+pub fn write(
+    response: &mut Response,
+    problem: &Problem,
+    challenge: Option<Challenge>,
+    retry_after: Option<u64>,
+) {
     *response.status_mut() =
         StatusCode::from_u16(problem.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
     response
@@ -54,6 +67,11 @@ pub fn write(response: &mut Response, problem: &Problem, challenge: Option<Chall
         response
             .headers_mut()
             .insert(WWW_AUTHENTICATE, challenge.header());
+    }
+    if let Some(seconds) = retry_after {
+        response
+            .headers_mut()
+            .insert(RETRY_AFTER, HeaderValue::from(seconds));
     }
     *response.body_mut() = Body::from_json(problem).unwrap_or_else(|_| Body::empty());
 }
@@ -80,7 +98,12 @@ impl<T: Responder> Responder for Outcome<T> {
         match self.0 {
             Ok(value) => value.respond_to(request, response),
             Err(error) => {
-                write(response, &error.problem(), error.challenge());
+                write(
+                    response,
+                    &error.problem(),
+                    error.challenge(),
+                    error.retry_after(),
+                );
                 Ok(())
             }
         }
@@ -126,6 +149,7 @@ mod tests {
         let rendered = response(
             &Problem::of_type("invalid-credential", 401, "Unauthorized", "nope"),
             Some(Challenge::InvalidToken),
+            None,
         );
 
         assert_eq!(rendered.status().as_u16(), 401);
@@ -147,8 +171,29 @@ mod tests {
 
     #[test]
     fn a_challengeless_problem_omits_the_authenticate_header() {
-        let rendered = response(&Problem::about_blank(400, "Bad Request", "nope"), None);
+        let rendered = response(
+            &Problem::about_blank(400, "Bad Request", "nope"),
+            None,
+            None,
+        );
         assert!(rendered.headers().get("www-authenticate").is_none());
+        assert!(rendered.headers().get("retry-after").is_none());
+    }
+
+    #[test]
+    fn a_wait_is_named_in_seconds() {
+        let rendered = response(
+            &Problem::of_type("rate-limited", 429, "Too Many Requests", "slow down"),
+            None,
+            Some(60),
+        );
+        assert_eq!(
+            rendered
+                .headers()
+                .get("retry-after")
+                .map(HeaderValue::as_bytes),
+            Some(b"60".as_slice())
+        );
     }
 }
 
