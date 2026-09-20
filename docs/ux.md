@@ -725,7 +725,11 @@ in that space is the one action that will change the state. The same rule
 covers every refusing state, which is why the composer no longer carries a
 `refusal` of its own. An `interrupted` session is the one exception: a
 message sent to it is what starts its machine again (§9.9), so its composer
-stays open and reads `Sent when the machine is back`.
+stays open and reads `Sent when the machine is back` — and, because that
+start is a minute's wait and an hourly price the user did not just choose,
+it is asked before it happens: `Start the machine?`, naming the machine and
+its rate, with `Start and send` as the one primary action and `Not now`
+leaving the draft in the field.
 
 ### 9.2 Transcript
 
@@ -1042,7 +1046,7 @@ A session with nothing to do still has a machine running, and a machine running 
 
 The same rule covers every provider. A codespace gets it from GitHub's own idle clock; everything else — an Azure VM, an AWS spot instance, a container on the user's own machine — is suspended by flyco on the same threshold, because a session should not cost differently for being idle on one cloud than another.
 
-Coming back is one word. A message sent to a suspended session starts the machine on its own disk and is delivered when the daemon attaches — the composer stays open for exactly this — and deciding a pending approval does the same, because the answer has to reach somebody. The timeline gains a `Migrating` row (`Starting the machine`, then `Agent ready`) where the gap happened, and the agent is told the machine was suspended and started again, so a process it left running is not mistaken for one still alive. Thirty seconds of cold start is the whole cost of the thirty minutes that were not billed.
+Coming back is one word and one question. A message sent to a suspended session starts the machine on its own disk and is delivered when the daemon attaches — the composer stays open for exactly this — but the start is asked for first (`Start the machine?`, with the machine's name, the minute it takes and what it bills), because a user who typed a sentence did not thereby choose to pay for a machine; `Not now` keeps the message in the field. Deciding a pending approval starts the machine without asking, because the answer has to reach somebody. The timeline gains a `Migrating` row (`Starting the machine`, then `Agent ready`) where the gap happened, and the agent is told the machine was suspended and started again, so a process it left running is not mistaken for one still alive. Thirty seconds of cold start is the whole cost of the thirty minutes that were not billed.
 
 A session nobody ever speaks to again is still archived at a week — suspension changed what it costs to wait, not how long flyco waits.
 

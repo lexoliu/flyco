@@ -72,3 +72,18 @@
   opacity: 0.5;
   cursor: default;
 }
+
+/* An affirmative question: yes is the primary, and cancel steps back. */
+.dialog[data-tone="affirm"] .confirm {
+  border-color: transparent;
+  background: var(--color-primary);
+  color: var(--color-primary-text);
+  font-weight: var(--weight-medium);
+}
+
+.dialog[data-tone="affirm"] .cancel {
+  border: var(--border-width) solid var(--color-border-strong);
+  background: transparent;
+  color: var(--color-text);
+  font-weight: var(--weight-regular);
+}

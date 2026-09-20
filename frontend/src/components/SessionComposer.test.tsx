@@ -57,7 +57,7 @@ function mount(overrides: Partial<SessionComposerProps> = {}) {
   const props: SessionComposerProps = {
     turnInFlight: false,
     commands: COMMANDS,
-    onSend: vi.fn(),
+    onSend: vi.fn(() => true),
     onStop: vi.fn(),
     onCommand: vi.fn(),
     machineUp: true,
