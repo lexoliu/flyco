@@ -53,7 +53,7 @@ use skyzen::responder::Sse;
 use skyzen::responder::sse::Event;
 use skyzen::routing::{CreateRouteNode, Route, Router};
 use skyzen::sql;
-use skyzen::utils::{Bytes, Json};
+use skyzen::utils::{Bytes, Json, State};
 use skyzen_services::durable::{DurableDb, DurableKv};
 
 use crate::ApiError;
@@ -62,6 +62,7 @@ use crate::extract::Headers;
 use crate::problem::Outcome;
 use crate::respond::NoContent;
 use crate::room::{HEADER_INTERNAL, INTERNAL};
+use crate::schema_version::Cache;
 
 /// Names the host a Worker→room call belongs to.
 pub const HEADER_HOST: &str = "x-flyco-host";
@@ -129,9 +130,20 @@ struct PresenceRow {
 /// The relay room for one enrolled host.
 #[derive(Debug, Default, Serialize, Deserialize)]
 #[skyzen::durable_object]
-pub struct HostRoom;
+pub struct HostRoom {
+    /// The schema version this activation already verified — a memo,
+    /// reset with the object on every event, never a fact of its own: it
+    /// can only trail the `schema_meta` row, never lead it. Not part of
+    /// the state blob, which stays the `null` a rolled-back build reads.
+    #[serde(skip)]
+    schema: Cache,
+}
 
 impl DurableObject for HostRoom {
+    /// Every durable fact lives in the object's storage; there is no
+    /// blob to load and save around an event.
+    const PERSIST: bool = false;
+
     fn fetch(&mut self) -> Router {
         Route::new((
             "/internal/attach".post(attach_host),
@@ -140,6 +152,7 @@ impl DurableObject for HostRoom {
             "/internal/command".post(run_command),
             "/internal/status".at(read_status),
         ))
+        .with(State(self.schema.clone()))
         .build()
     }
 }
@@ -155,10 +168,13 @@ impl DurableObject for HostRoom {
 async fn attach_host(
     headers: Headers,
     Json(attach): Json<HostAttach>,
+    State(cache): State<Cache>,
     db: DurableDb,
     kv: DurableKv,
 ) -> Outcome<Json<HostAttachResponse>> {
-    attach_inner(&headers, &attach, &db, &kv).await.into()
+    attach_inner(&headers, &attach, &db, &kv, &cache)
+        .await
+        .into()
 }
 
 async fn attach_inner(
@@ -166,9 +182,10 @@ async fn attach_inner(
     attach: &HostAttach,
     db: &DurableDb,
     kv: &DurableKv,
+    cache: &Cache,
 ) -> Result<Json<HostAttachResponse>, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
 
@@ -205,18 +222,22 @@ async fn attach_inner(
 async fn stream_commands(
     headers: Headers,
     Query(cursor): Query<HostCommandCursor>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<Sse> {
-    open_command_stream(&headers, cursor.epoch, db).await.into()
+    open_command_stream(&headers, cursor.epoch, db, &cache)
+        .await
+        .into()
 }
 
 async fn open_command_stream(
     headers: &Headers,
     epoch: u64,
     db: DurableDb,
+    cache: &Cache,
 ) -> Result<Sse, ApiError> {
     internal(headers)?;
-    ensure_schema(&db)
+    ensure_schema(&db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let presence = read_presence(&db)
@@ -366,18 +387,20 @@ async fn command_feed_step(feed: &mut CommandFeed) -> Result<crate::sse::Poll, (
 async fn accept_frames(
     headers: Headers,
     Json(batch): Json<HostFrames>,
+    State(cache): State<Cache>,
     db: DurableDb,
 ) -> Outcome<NoContent> {
-    accept_batch(&headers, batch, &db).await.into()
+    accept_batch(&headers, batch, &db, &cache).await.into()
 }
 
 async fn accept_batch(
     headers: &Headers,
     batch: HostFrames,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     let Some(presence) = read_presence(db)
@@ -422,7 +445,7 @@ async fn accept_batch(
                 // mailbox holds it: the name is derived from the machine
                 // id, so the answer and the job agree without a second
                 // column.
-                answered(db, &container_name(*job_id))
+                answered(db, &container_name(*job_id), cache)
                     .await
                     .map_err(|error| room_failed(&error))?;
             }
@@ -483,11 +506,12 @@ async fn hold(
     db: &DurableDb,
     container: Option<&str>,
     command: &ControlToHost,
+    cache: &Cache,
 ) -> Result<(), DurableObjectError> {
     let json = serde_json::to_string(command)
         .map_err(|error| DurableObjectError::Serialization(error.to_string()))?;
     let now = now_unix();
-    ensure_schema(db).await?;
+    ensure_schema(db, cache).await?;
     match container {
         Some(container) => sql!(
             db,
@@ -514,8 +538,12 @@ async fn hold(
 /// The oldest rather than all of them: a session that was created and
 /// then stopped has two jobs on the same container, and the answer to the
 /// first says nothing about the second.
-async fn answered(db: &DurableDb, container: &str) -> Result<(), DurableObjectError> {
-    ensure_schema(db).await?;
+async fn answered(
+    db: &DurableDb,
+    container: &str,
+    cache: &Cache,
+) -> Result<(), DurableObjectError> {
+    ensure_schema(db, cache).await?;
     sql!(
         db,
         "DELETE FROM host_commands WHERE seq = \
@@ -533,8 +561,8 @@ async fn answered(db: &DurableDb, container: &str) -> Result<(), DurableObjectEr
 /// is work that is never going to happen: keeping it would make the
 /// room's own status lie about what is pending. Non-job rows are left —
 /// the `Revoked` itself is one, and it is owed delivery.
-async fn forget_jobs(db: &DurableDb) -> Result<(), DurableObjectError> {
-    ensure_schema(db).await?;
+async fn forget_jobs(db: &DurableDb, cache: &Cache) -> Result<(), DurableObjectError> {
+    ensure_schema(db, cache).await?;
     sql!(db, "DELETE FROM host_commands WHERE machine IS NOT NULL")
         .execute()
         .await
@@ -542,8 +570,8 @@ async fn forget_jobs(db: &DurableDb) -> Result<(), DurableObjectError> {
     Ok(())
 }
 
-async fn pending_jobs(db: &DurableDb) -> Result<u32, DurableObjectError> {
-    ensure_schema(db).await?;
+async fn pending_jobs(db: &DurableDb, cache: &Cache) -> Result<u32, DurableObjectError> {
+    ensure_schema(db, cache).await?;
     let count: u64 = sql!(
         db,
         "SELECT COUNT(*) AS pending FROM host_commands WHERE machine IS NOT NULL"
@@ -557,11 +585,10 @@ async fn pending_jobs(db: &DurableDb) -> Result<u32, DurableObjectError> {
 /// The schema this build expects.
 ///
 /// The durable answer to "is the schema already there" lives in the
-/// `schema_meta` table [`crate::schema_version`] keeps: checking it costs
-/// one storage read where running every `CREATE` blind costs one per
-/// statement — and every hot path in the room calls this first. Bump it
-/// when the DDL below changes so a room built by an older build upgrades
-/// once, on its next call.
+/// `schema_meta` table [`crate::schema_version`] keeps, and the object
+/// itself remembers having read it: checking an answer the object already
+/// holds costs nothing at all. Bump it when the DDL below changes so a
+/// room built by an older build upgrades once, on its next call.
 const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the mailbox if this is the room's first write.
@@ -569,9 +596,10 @@ const SCHEMA_VERSION: i64 = 2;
 /// `AUTOINCREMENT` rather than a counter in the object: the order jobs
 /// were planned in has to survive the object being rebuilt around every
 /// event, and the database is the only thing here that guarantees it.
-async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
+async fn ensure_schema(db: &DurableDb, cache: &Cache) -> Result<(), DurableObjectError> {
     crate::schema_version::ensure(
         db,
+        cache,
         SCHEMA_VERSION,
         &[
             // Every command owed to the host. `machine` names the container a
@@ -656,8 +684,13 @@ fn internal(headers: &Headers) -> Result<(), ApiError> {
 
 /// Sends one command to the host, holding the container work it cannot
 /// take right now.
-async fn run_command(headers: Headers, body: Bytes, db: DurableDb) -> Outcome<NoContent> {
-    dispatch(&headers, &body, &db).await.into()
+async fn run_command(
+    headers: Headers,
+    body: Bytes,
+    State(cache): State<Cache>,
+    db: DurableDb,
+) -> Outcome<NoContent> {
+    dispatch(&headers, &body, &db, &cache).await.into()
 }
 
 /// Reads the command out of the body itself.
@@ -668,19 +701,25 @@ async fn run_command(headers: Headers, body: Bytes, db: DurableDb) -> Outcome<No
 /// identity — and none of that is an API schema anybody publishes. The
 /// room's internal routes are spoken only by this Worker, so the body is
 /// decoded here rather than dragged through `OpenAPI`.
-async fn dispatch(headers: &Headers, body: &[u8], db: &DurableDb) -> Result<NoContent, ApiError> {
+async fn dispatch(
+    headers: &Headers,
+    body: &[u8],
+    db: &DurableDb,
+    cache: &Cache,
+) -> Result<NoContent, ApiError> {
     let command: ControlToHost = serde_json::from_slice(body)
         .map_err(|error| ApiError::Room(format!("a host command did not decode: {error}")))?;
-    dispatch_command(headers, &command, db).await
+    dispatch_command(headers, &command, db, cache).await
 }
 
 async fn dispatch_command(
     headers: &Headers,
     command: &ControlToHost,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<NoContent, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
 
@@ -690,7 +729,7 @@ async fn dispatch_command(
     let live = host_live(db).await.map_err(|error| room_failed(&error))?;
     match command {
         ControlToHost::Run { job } => {
-            hold(db, Some(job.container()), command)
+            hold(db, Some(job.container()), command, cache)
                 .await
                 .map_err(|error| room_failed(&error))?;
         }
@@ -705,7 +744,7 @@ async fn dispatch_command(
             ))));
         }
         _ if live => {
-            hold(db, None, command)
+            hold(db, None, command, cache)
                 .await
                 .map_err(|error| room_failed(&error))?;
         }
@@ -718,29 +757,37 @@ async fn dispatch_command(
     }
 
     if matches!(command, ControlToHost::Revoked) {
-        forget_jobs(db).await.map_err(|error| room_failed(&error))?;
+        forget_jobs(db, cache)
+            .await
+            .map_err(|error| room_failed(&error))?;
     }
     Ok(NoContent)
 }
 
 /// Serves what the room knows about its machine.
-async fn read_status(headers: Headers, kv: DurableKv, db: DurableDb) -> Outcome<Json<HostStatus>> {
-    status(&headers, &kv, &db).await.into()
+async fn read_status(
+    headers: Headers,
+    kv: DurableKv,
+    State(cache): State<Cache>,
+    db: DurableDb,
+) -> Outcome<Json<HostStatus>> {
+    status(&headers, &kv, &db, &cache).await.into()
 }
 
 async fn status(
     headers: &Headers,
     kv: &DurableKv,
     db: &DurableDb,
+    cache: &Cache,
 ) -> Result<Json<HostStatus>, ApiError> {
     internal(headers)?;
-    ensure_schema(db)
+    ensure_schema(db, cache)
         .await
         .map_err(|error| room_failed(&error))?;
     Ok(Json(HostStatus {
         connected: host_live(db).await.map_err(|error| room_failed(&error))?,
         facts: read_facts(kv).await?,
-        pending_jobs: pending_jobs(db)
+        pending_jobs: pending_jobs(db, cache)
             .await
             .map_err(|error| room_failed(&error))?,
     }))

@@ -38,19 +38,12 @@ use flyco_core::{
 };
 
 use crate::error::ApiError;
+use crate::room::EVENT_PAGE_LIMIT;
 use crate::rooms::Rooms;
-use flyco_core::wire::StoredEvent;
+use flyco_core::wire::{EventPage, StoredEvent};
 
 /// Most turns one page returns.
 pub const MAX_TURNS_PER_PAGE: u32 = 50;
-
-/// How many event pages one request may read.
-///
-/// A turn is many events, and a session that produced tens of thousands of
-/// them between two turn boundaries would otherwise hold the request open
-/// for as long as it took to walk all of them. Stopping early is not a lost
-/// page: the cursor comes back and the client asks again.
-const MAX_EVENT_PAGES: usize = 8;
 
 /// Reads one page of a session's turns.
 ///
@@ -73,18 +66,51 @@ pub async fn page(
     };
     let limit = limit.unwrap_or(MAX_TURNS_PER_PAGE).min(MAX_TURNS_PER_PAGE) as usize;
 
+    walk(after, limit, |after| rooms.events(session, after)).await
+}
+
+/// Folds the room's stream into a page of turns, a page of events at a
+/// time.
+///
+/// A turn is many events, and a session that produced tens of thousands of
+/// them between two turn boundaries would otherwise hold the request open
+/// for as long as it took to walk all of them — so the walk stops once the
+/// rows it read reach [`EVENT_PAGE_LIMIT`]. Stopping early is not a lost
+/// page: the cursor comes back and the client asks again.
+///
+/// A page that reports more to read must carry at least one event, or the
+/// cursor could not advance; a room that answered otherwise is refused
+/// rather than asked again forever.
+pub(crate) async fn walk<F, Fut>(
+    after: u64,
+    limit: usize,
+    mut events: F,
+) -> Result<TurnPage, ApiError>
+where
+    F: FnMut(u64) -> Fut,
+    Fut: core::future::Future<Output = Result<EventPage, ApiError>>,
+{
     let mut fold = Fold::new(after, limit);
-    for _ in 0..MAX_EVENT_PAGES {
-        let events = rooms.events(session, fold.resume_from()).await?;
-        fold.absorb(&events.events)?;
+    let mut walked = 0_usize;
+    loop {
+        let page = events(fold.resume_from()).await?;
+        if page.more && page.events.is_empty() {
+            return Err(ApiError::Room(
+                "an event page claimed more to read and carried no events".to_owned(),
+            ));
+        }
+        walked += page.events.len();
+        fold.absorb(&page.events)?;
         if fold.is_full() {
             return Ok(fold.into_page(true));
         }
-        if !events.more {
+        if !page.more {
             return Ok(fold.into_page(false));
         }
+        if walked >= EVENT_PAGE_LIMIT as usize {
+            return Ok(fold.into_page(true));
+        }
     }
-    Ok(fold.into_page(true))
 }
 
 /// The turns recovered from a stretch of the room's stream.
