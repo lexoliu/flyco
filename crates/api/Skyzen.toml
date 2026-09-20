@@ -144,6 +144,19 @@ FLYCO_TURNSTILE_HOSTNAMES = "${FLYCO_TURNSTILE_HOSTNAMES}"
 # Workers Logs: every invocation's logs and exceptions are stored and
 # searchable in the dashboard (Workers & Pages → flyco → Logs), not only
 # visible while someone runs `wrangler tail`. Sampling 1 keeps all of them.
+# The D1 entry wrangler actually reads. `skyzen migrate` needs the entry to
+# name `migrations_dir` — wrangler resolves it against the generated
+# config's own directory, `crates/api/.skyzen/gen/` — and the manifest's
+# `[[database]]` entry only moves the native path, so the whole entry is
+# restated here: a raw array replaces the rendered one rather than merging
+# into it. The values are the ones `[[cloudflare.d1_databases]]` above
+# declares, which skyzen still validates and provisions from (issue #363).
+[[cloudflare.raw.d1_databases]]
+binding = "DB"
+database_name = "flyco-main"
+database_id = "${FLYCO_D1_DATABASE_ID}"
+migrations_dir = "../../../../migrations"
+
 [cloudflare.raw.observability]
 enabled = true
 head_sampling_rate = 1
