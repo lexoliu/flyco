@@ -789,7 +789,8 @@ describe("route smoke tests", () => {
       return base!(input, init);
     });
 
-    const { findByRole, findByText, getByLabelText } = renderAt("/sessions/abc-123");
+    const { findByRole, findByText, getByLabelText, getByRole, queryByRole } =
+      renderAt("/sessions/abc-123");
 
     const state = await findByRole("region", { name: "Session state" });
     expect(state.textContent).toContain("Interrupted · suspended");
@@ -803,10 +804,28 @@ describe("route smoke tests", () => {
     type(field, "pick up where you left off");
     fireEvent.keyDown(field, { key: "Enter" });
 
+    // Sending is what starts the machine, so it is asked first — with what
+    // the machine is and what it costs — and nothing has been sent yet.
+    const ask = await findByRole("alertdialog", { name: "Start the machine?" });
+    expect(ask.textContent).toContain("Starting it takes about a minute");
+    expect(ask.textContent).toContain("Your message is sent once it is back");
+    expect(sent).toHaveLength(0);
+
+    // "Not now" keeps the draft where it was typed.
+    fireEvent.click(getByRole("button", { name: "Not now" }));
+    await vi.waitFor(() => expect(queryByRole("alertdialog", { name: "Start the machine?" })).toBeNull());
+    expect(field.value).toBe("pick up where you left off");
+    expect(sent).toHaveLength(0);
+
+    // Sent again and confirmed, the message goes — and the field clears.
+    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.click(await findByRole("button", { name: "Start and send" }));
+
     await vi.waitFor(() => expect(sent).toHaveLength(1));
     expect(JSON.parse(sent[0] ?? "{}")).toEqual({
       text: "pick up where you left off",
     });
+    await vi.waitFor(() => expect(field.value).toBe(""));
   });
 
   it("refuses a shell command while the suspended session's machine is off", async () => {

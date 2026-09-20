@@ -151,6 +151,7 @@ const SESSION_IDS = {
   bench: "1a2b3c4d-0007-4000-8000-000000000007",
   hi1: "1a2b3c4d-0008-4000-8000-000000000008",
   hi2: "1a2b3c4d-0009-4000-8000-000000000009",
+  napping: "1a2b3c4d-0010-4000-8000-000000000010",
 } as const;
 
 function session(
@@ -192,6 +193,9 @@ const SESSIONS: S["SessionDetail"][] = [
     interrupted_reason: "spot_reclaimed",
   }),
   session(SESSION_IDS.compositor, "Port the compositor wake path to the new timer", { slug: "lexoliu/helios", branch: "compositor-wake" }, "active", "idle", 3 * HOUR),
+  session(SESSION_IDS.napping, "Trim the boot log's serial chatter", { slug: "lexoliu/helios", branch: "dev" }, "interrupted", "idle", 5 * HOUR, {
+    interrupted_reason: "suspended",
+  }),
   session(SESSION_IDS.serial, "Investigate serial console garbage on boot", { slug: "lexoliu/helios", branch: "dev" }, "paused", "idle", 8 * HOUR, {
     paused_reason: "budget",
     budget: { limit: 5 * USD, spent: 5 * USD, remaining: 0, stage: "exhausted" },
@@ -411,7 +415,14 @@ function machineOf(id: string): S["MachineView"] {
     id: `0000${id.slice(4)}`,
     session: id,
     spec: { provider: "azure", machine_type: "Standard_B2s", region: "eastus", runtime: "vm", spot, disk_gib: 64 },
-    state: id === SESSION_IDS.bench ? "provisioning" : id === SESSION_IDS.gtk ? "destroyed" : "running",
+    state:
+      id === SESSION_IDS.bench
+        ? "provisioning"
+        : id === SESSION_IDS.gtk
+          ? "destroyed"
+          : id === SESSION_IDS.napping
+            ? "deallocated"
+            : "running",
     spot,
     region: "eastus",
     hourly: 0.0083 * USD,

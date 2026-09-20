@@ -54,6 +54,7 @@ import {
   type ModelChoice,
   type ModelOption,
   type PermissionMode,
+  type MachineView,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
 import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
@@ -62,10 +63,10 @@ import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
 import { reposLabel } from "../lib/repos";
 import { PROVIDER_LABEL } from "../lib/providers";
-import { machineChip } from "../lib/machines";
+import { machineChip, shortMachineType } from "../lib/machines";
 import { modesFor } from "../lib/modes";
 import { orderedWindows } from "../lib/planUsage";
-import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
+import { dollarsToUsdMicros, formatUsd, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
 import {
   REFUSING,
@@ -531,6 +532,31 @@ export default function SessionDetail() {
   );
 
   const [error, setError] = createSignal<unknown>(null);
+  /**
+   * The message waiting on the user's word to start the machine.
+   *
+   * Set when a prompt is sent to a session whose machine a message would
+   * wake; cleared by the answer either way.
+   */
+  const [pendingWake, setPendingWake] = createSignal<{
+    text: string;
+    answer: (start: boolean) => void;
+  } | null>(null);
+  /**
+   * Whether a message sent now would start a machine, and which way.
+   *
+   * `suspended` starts the machine the session already has; `machine_lost`
+   * builds a new one. A reclaimed machine is already being restarted, and
+   * every other state either delivers the message at once or refuses the
+   * composer altogether, so neither needs asking.
+   */
+  const wakeOnSend = createMemo((): "suspended" | "machine_lost" | null => {
+    if (status()?.status !== "interrupted") {
+      return null;
+    }
+    const reason = session()?.interrupted_reason;
+    return reason === "suspended" || reason === "machine_lost" ? reason : null;
+  });
   const [deciding, setDeciding] = createSignal(false);
   const [resuming, setResuming] = createSignal(false);
   const [archiving, setArchiving] = createSignal(false);
@@ -608,18 +634,43 @@ export default function SessionDetail() {
    * live, and the composer says so when it is not rather than swallowing
    * the command.
    */
-  function onSend(text: string): void {
+  function onSend(text: string): boolean | Promise<boolean> {
     const command = shellCommandIn(text);
     if (command === null) {
+      // A message to a session whose machine is off is also what starts
+      // the machine again (docs/ux.md §9.9) — a minute of waiting and an
+      // hourly price the user did not just choose. That is asked, not
+      // assumed: the draft stays in the field until the question is
+      // answered, and "Not now" keeps it there.
+      if (wakeOnSend() !== null) {
+        return new Promise((answer) => setPendingWake({ text, answer }));
+      }
       void attempt(() => relay.send({ type: "user_message", text }));
-      return;
+      return true;
     }
     setError(null);
     if (relay.state() !== "live") {
       setError(new Error("Reconnecting to the session — a shell command needs a live connection."));
-      return;
+      return false;
     }
     void attempt(() => relay.send({ type: "shell_command", command }));
+    return true;
+  }
+
+  /**
+   * Answers the start question: `true` sends the held message, which is
+   * what starts the machine; `false` leaves the draft in the field.
+   */
+  function answerWake(start: boolean): void {
+    const ask = pendingWake();
+    setPendingWake(null);
+    if (ask === null) {
+      return;
+    }
+    if (start) {
+      void attempt(() => relay.send({ type: "user_message", text: ask.text }));
+    }
+    ask.answer(start);
   }
 
   function onStop(): void {
@@ -920,6 +971,20 @@ export default function SessionDetail() {
       </Show>
       <ProblemNotice error={error()} />
 
+      <Show when={pendingWake() !== null ? wakeOnSend() : null}>
+        {(reason) => (
+          <ConfirmDialog
+            title={reason() === "suspended" ? "Start the machine?" : "Build a new machine?"}
+            body={wakeBody(reason(), machine())}
+            tone="affirm"
+            confirmLabel="Start and send"
+            cancelLabel="Not now"
+            onConfirm={() => answerWake(true)}
+            onCancel={() => answerWake(false)}
+          />
+        )}
+      </Show>
+
       <Show when={pendingDirtySummary()}>
         {(summary) => (
           <ConfirmDialog
@@ -1197,7 +1262,7 @@ export default function SessionDetail() {
                       {(command) => (
                         <GoalChip
                           description={command().description}
-                          onSet={(condition) => onSend(`/goal ${condition}`)}
+                          onSet={(condition) => void onSend(`/goal ${condition}`)}
                         />
                       )}
                     </Show>
@@ -1286,4 +1351,23 @@ export default function SessionDetail() {
       </div>
     </section>
   );
+}
+
+/**
+ * What starting the machine will cost the user, before their message does it.
+ *
+ * Three facts, in the order they decide: what the machine is, how long the
+ * wait is and what it bills, and that the message is not lost — it is what
+ * the machine wakes to.
+ */
+function wakeBody(reason: "suspended" | "machine_lost", machine: MachineView | undefined): string {
+  const name = machine === undefined ? "The machine" : shortMachineType(machine.spec.machine_type);
+  const rate =
+    machine?.hourly === null || machine?.hourly === undefined
+      ? ""
+      : ` and bills ${formatUsd(machine.hourly)}/hr while it runs`;
+  if (reason === "suspended") {
+    return `${name} is stopped and its disk is kept. Starting it takes about a minute${rate}. Your message is sent once it is back.`;
+  }
+  return `The provider no longer has ${machine === undefined ? "this machine" : name}. Sending builds a new one on a fresh disk, which takes a few minutes${rate}, and the conversation continues where it stopped.`;
 }

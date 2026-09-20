@@ -34,7 +34,16 @@ export interface ConfirmDialogProps {
    * uncommitted changes, a removal that stops running sessions. An unlink
    * the user can undo by linking again is not one.
    */
-  tone?: "danger" | "quiet" | undefined;
+  /**
+   * What confirming does to the reader's world.
+   *
+   * `danger` and `quiet` are a question whose safe answer is to cancel —
+   * the cancel is the filled button and the confirm is outlined in the
+   * danger colour. `affirm` is a question whose expected answer is yes —
+   * starting a machine to deliver a message — so the confirm is the
+   * filled primary and the cancel the quiet one.
+   */
+  tone?: "danger" | "quiet" | "affirm" | undefined;
   /** Does the thing. Absent while there is nothing to confirm — see below. */
   onConfirm?: (() => void) | undefined;
   onCancel: () => void;
