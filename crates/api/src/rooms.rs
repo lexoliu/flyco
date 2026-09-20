@@ -25,8 +25,6 @@ use core::fmt::Write as _;
 #[cfg(target_arch = "wasm32")]
 use core::marker::PhantomData;
 
-use core::time::Duration;
-
 use flyco_core::wire::{DaemonAttach, DaemonAttached, DaemonFrames};
 use flyco_core::workdir::{WorkdirReply, WorkdirRequest};
 use flyco_core::{
@@ -34,13 +32,17 @@ use flyco_core::{
     RepoStatus, SessionId, UserId, WorkdirRequestId,
 };
 use flyco_provider::host::{HostAttach, HostFrames};
+use futures_util::StreamExt as _;
 use skyzen::extract::Extractor;
 use skyzen::{Body, Method, Request, StatusCode};
 use skyzen_services::Db;
 
 use crate::error::ApiError;
 use crate::host_room::{HEADER_HOST, HostAttachResponse, HostStatus};
-use crate::room::{AttachResponse, Emitted, HEADER_INTERNAL, HEADER_SESSION, INTERNAL};
+use crate::room::{
+    AttachResponse, Emitted, HEADER_INTERNAL, HEADER_SESSION, INTERNAL, WORKDIR_REPLY_EVENT,
+    WORKDIR_TIMEOUT_EVENT,
+};
 use crate::user_events::{HEADER_USER, PublishEvents};
 use flyco_core::wire::EventPage;
 
@@ -723,41 +725,27 @@ impl Rooms {
     }
 }
 
-/// How often the Worker asks the room whether the daemon has answered.
-///
-/// Short enough that opening a directory feels immediate on a machine in
-/// the same region, long enough that a slow diff does not cost a hundred
-/// round trips into the Durable Object.
-const WORKDIR_POLL: Duration = Duration::from_millis(120);
-
-/// How long the Worker waits for an answer before giving up on it.
-///
-/// A diff of a large tree runs git twice on the session VM, so this is
-/// generous by the standards of a REST call — and it is still bounded,
-/// because the browser is holding a request open behind it.
-const WORKDIR_DEADLINE: Duration = Duration::from_secs(12);
-
 impl Rooms {
     /// Asks a session's daemon something about its checkout, and waits for
     /// the answer.
     ///
-    /// # Why this polls
+    /// # Why the wait lives inside the room
     ///
-    /// A Durable Object is *reconstructed* around every event, so the room
-    /// cannot hold a request open across the frame that answers it: the
-    /// `fetch` that forwarded the question and the `frames` POST that
-    /// carries the reply are two activations with no memory between them.
-    /// The answer therefore lands in the room's own database, and the
-    /// Worker — which *can* hold the browser's request open — comes back
-    /// for it. Two hops that a single in-memory `await` would do on any
-    /// server with a heap, and the reason the room's storage is the
-    /// rendezvous instead.
+    /// skyzen rebuilds a Durable Object around every event, so the room
+    /// has no in-memory rendezvous: the `fetch` that forwards the question
+    /// and the `frames` POST that carries the reply are two activations
+    /// with no memory between them. What they share is the room's storage,
+    /// so the room holds the question's request open and the answer stream
+    /// polls the reply table inside it — the same shape every stream in
+    /// the room already takes. The Worker makes exactly one room call per
+    /// browser request, where coming back for the answer every 120 ms
+    /// cost it up to a hundred.
     ///
     /// # Errors
     ///
     /// Returns [`ApiError::SessionDaemonOffline`] if no daemon is connected
     /// to read the checkout, [`ApiError::WorkdirTimeout`] if one is but did
-    /// not answer in [`WORKDIR_DEADLINE`], or [`ApiError::Room`] if the
+    /// not answer before the room's deadline, or [`ApiError::Room`] if the
     /// room could not be reached.
     pub async fn inspect_workdir(
         &self,
@@ -769,35 +757,47 @@ impl Rooms {
         let encoded = serde_json::to_vec(&command)
             .map_err(|_| ApiError::CorruptRecord("a workdir question failed to encode"))?;
 
-        let (status, answer) = self
+        let response = self
             .rooms
-            .call(session, Verb::Post, "/internal/workdir", Some(encoded))
+            .call_raw(session, Verb::Post, "/internal/workdir", Some(encoded))
             .await?;
+        let status = response.status();
         if status == StatusCode::SERVICE_UNAVAILABLE {
             return Err(ApiError::SessionDaemonOffline);
         }
         if !status.is_success() {
-            return Err(refused(status, &answer, "a workdir question"));
+            let body = response
+                .into_body()
+                .into_bytes()
+                .await
+                .map_err(|error| ApiError::Room(error.to_string()))?;
+            return Err(refused(status, &body, "a workdir question"));
         }
 
-        let path = format!("/internal/workdir?id={id}");
-        let mut waited = Duration::ZERO;
+        // The answer is the stream's one terminal event: `reply` carrying
+        // it, or `timeout` when the room's own deadline passed. Heartbeat
+        // comments are skipped over.
+        let mut events = response.into_body().into_sse();
         loop {
-            futures_timer::Delay::new(WORKDIR_POLL).await;
-            waited = waited.saturating_add(WORKDIR_POLL);
-
-            let (status, body) = self.rooms.call(session, Verb::Get, &path, None).await?;
-            if status.is_success() {
-                return serde_json::from_slice(&body).map_err(|error| {
-                    ApiError::Room(format!("the room returned no workdir answer: {error}"))
-                });
-            }
-            if status != StatusCode::NOT_FOUND {
-                return Err(refused(status, &body, "a workdir collection"));
-            }
-            if waited >= WORKDIR_DEADLINE {
-                tracing::warn!(%session, %id, "a daemon did not answer a workdir question in time");
-                return Err(ApiError::WorkdirTimeout);
+            let Some(item) = events.next().await else {
+                return Err(ApiError::Room(
+                    "a workdir answer stream ended without an answer".to_owned(),
+                ));
+            };
+            let event = item.map_err(|error| {
+                ApiError::Room(format!("a workdir answer could not be read: {error}"))
+            })?;
+            match event.event() {
+                Some(WORKDIR_REPLY_EVENT) => {
+                    return event.data::<WorkdirReply>().map_err(|error| {
+                        ApiError::Room(format!("a workdir answer did not parse: {error}"))
+                    });
+                }
+                Some(WORKDIR_TIMEOUT_EVENT) => {
+                    tracing::warn!(%session, %id, "a daemon did not answer a workdir question in time");
+                    return Err(ApiError::WorkdirTimeout);
+                }
+                _ => {}
             }
         }
     }
