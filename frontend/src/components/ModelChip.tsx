@@ -23,6 +23,7 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
 import { Check, ChevronRight, RotateCcw } from "lucide-solid";
 import Popover from "./Popover";
+import SearchField from "./SearchField";
 import Detents from "./Detents";
 import type { ModelChoice, ModelOption } from "../api/client";
 import { cx } from "../lib/cx";
@@ -245,9 +246,7 @@ export default function ModelChip(props: ModelChipProps) {
                 }
               >
                 <Show when={props.models.length > SEARCH_WORTH_IT}>
-                  <input
-                    class={composer.search}
-                    type="search"
+                  <SearchField
                     placeholder="Search models"
                     aria-label="Search models"
                     value={query()}
