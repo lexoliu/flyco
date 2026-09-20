@@ -30,6 +30,7 @@ import ComposerShell from "./ComposerShell";
 import MachinePicker from "./MachinePicker";
 import ModelChip from "./ModelChip";
 import Popover from "./Popover";
+import SearchField from "./SearchField";
 import RepoBranchPicker from "./RepoBranchPicker";
 import Logomark, { HARNESS_MARK, PROVIDER_MARK } from "./Logomark";
 import ProblemNotice from "./ProblemNotice";
@@ -724,9 +725,7 @@ function RepoChip(props: {
               </For>
             </ul>
           </Show>
-          <input
-            class={styles.search}
-            type="search"
+          <SearchField
             placeholder="Search your repositories"
             aria-label="Search your repositories"
             value={query()}

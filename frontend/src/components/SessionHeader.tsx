@@ -28,6 +28,7 @@ import {
   Square,
 } from "lucide-solid";
 import Popover from "./Popover";
+import SearchField from "./SearchField";
 import ProblemNotice from "./ProblemNotice";
 import RepoBranchPicker from "./RepoBranchPicker";
 import { listRepos, type MachineView, type SessionDetail } from "../api/client";
@@ -419,9 +420,7 @@ function ReposChip(props: {
                 </button>
               }
             >
-              <input
-                class={styles.search}
-                type="search"
+              <SearchField
                 placeholder="Search your repositories"
                 aria-label="Search your repositories"
                 value={query()}

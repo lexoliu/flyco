@@ -1,0 +1,37 @@
+.field {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  width: 100%;
+  height: 38px;
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: var(--text-md);
+  line-height: normal;
+  transition:
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.field::placeholder {
+  color: var(--color-text-faint);
+}
+
+.field::-webkit-search-decoration,
+.field::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+
+.field:hover {
+  border-color: var(--color-border-strong);
+}
+
+.field:focus {
+  outline: none;
+  border-color: var(--color-border-strong);
+  background: var(--color-surface-raised);
+}
