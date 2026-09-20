@@ -85,21 +85,22 @@
   padding: var(--space-3) var(--space-4);
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-lg);
-  background: var(--color-surface);
+  background: var(--color-surface-raised);
   color: var(--color-text);
   text-align: left;
   transition:
     border-color var(--transition-fast),
-    background var(--transition-fast);
+    box-shadow var(--transition-fast);
 }
 
 .choice:hover {
   border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-card);
 }
 
 .choice[aria-checked="true"] {
   border-color: var(--color-text);
-  background: var(--color-bg);
+  box-shadow: 0 0 0 1px var(--color-text);
 }
 
 .choiceMark {
@@ -111,7 +112,7 @@
   flex: none;
   border: var(--border-width) solid var(--color-border);
   border-radius: var(--radius-md);
-  background: var(--color-bg);
+  background: var(--color-surface);
 }
 
 .choiceText {
@@ -162,11 +163,13 @@
   width: 100%;
   padding: var(--space-3) var(--space-4);
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-bg);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
   color: var(--color-text);
   font-size: var(--text-md);
-  transition: border-color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .paste,
@@ -184,6 +187,7 @@
 .paste:focus-visible {
   outline: none;
   border-color: var(--color-focus-ring);
+  background: var(--color-surface-raised);
 }
 
 .paste[aria-invalid="true"],
@@ -241,15 +245,19 @@
   gap: var(--space-1);
   align-self: flex-start;
   flex: none;
-  padding: var(--space-1) var(--space-3);
-  border: var(--border-width) solid var(--color-border);
+  height: 30px;
+  padding: 0 var(--space-3);
+  border: var(--border-width) solid var(--color-border-strong);
   border-radius: var(--radius-full);
-  background: var(--color-bg);
+  background: var(--color-surface-raised);
   color: var(--color-text);
   font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
   text-decoration: none;
   white-space: nowrap;
-  transition: border-color var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
 }
 
 .pill:hover {

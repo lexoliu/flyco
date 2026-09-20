@@ -17,14 +17,14 @@
   flex: 1;
   min-height: 0;
   width: 100%;
-  max-width: 1180px;
+  max-width: 1200px;
   margin: 0 auto;
   /* No top padding: the header owns the page's top edge and carries its
      own. */
-  padding: 0 var(--space-4);
+  padding: 0 var(--space-5);
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
   overflow: hidden;
 }
 
@@ -38,21 +38,28 @@
  * the reader just tried to type. Above the transcript it was a third band
  * of chrome under two others, saying the word the status pill had already
  * said.
+ *
+ * A card, like the composer it replaces: title on one line, the sentence
+ * under it, the action at the right.
  */
 .stateNotice {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--space-2) var(--space-3);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "title action"
+    "body action";
+  align-items: center;
+  gap: var(--space-1) var(--space-5);
   margin: 0;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-4) var(--space-5);
   border: var(--border-width) solid var(--color-border);
-  border-radius: var(--radius-lg);
-  background: var(--color-surface-sunken);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-raised);
 }
 
 .stateNotice[data-tone="failed"] {
-  border-color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 35%, var(--color-border));
   background: var(--color-danger-muted);
 }
 
@@ -64,7 +71,7 @@
 /* A plan window being waited out. Warm rather than red: nothing is wrong,
    and the notice is above a composer that still works. */
 .stateNotice[data-tone="waiting"] {
-  border-color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 35%, var(--color-border));
   background: var(--color-warning-soft);
 }
 
@@ -73,9 +80,11 @@
 }
 
 .stateTitle {
+  grid-area: title;
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
   font-weight: var(--weight-semibold);
+  letter-spacing: var(--tracking-snug);
 }
 
 .stateNotice[data-tone="failed"] .stateTitle {
@@ -83,7 +92,7 @@
 }
 
 .stateBody {
-  flex: 1 1 20rem;
+  grid-area: body;
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--text-sm);
@@ -91,16 +100,25 @@
 }
 
 .stateAction {
+  grid-area: action;
   flex: none;
-  padding: var(--space-2) var(--space-4);
+  height: 34px;
+  padding: 0 var(--space-4);
   border: none;
   border-radius: var(--radius-full);
   background: var(--color-primary);
   color: var(--color-primary-text);
   font-size: var(--text-sm);
   font-weight: var(--weight-medium);
+  white-space: nowrap;
   cursor: pointer;
-  transition: transform var(--transition-fast);
+  transition:
+    transform var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.stateAction:hover:not(:disabled) {
+  background: var(--color-primary-hover);
 }
 
 .stateAction:active:not(:disabled) {
@@ -115,7 +133,7 @@
 .body {
   display: flex;
   align-items: stretch;
-  gap: var(--space-4);
+  gap: var(--space-5);
   flex: 1;
   min-height: 0;
 }
@@ -128,16 +146,25 @@
   min-height: 0;
 }
 
-/* The only thing in the column that scrolls. */
+/* The only thing in the column that scrolls. The transcript inside it is
+   held to a reading measure and centred, so a wide window widens the
+   margins rather than the lines. */
 .scroller {
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
   flex: 1;
   min-height: 0;
-  padding-top: var(--space-2);
+  padding: var(--space-4) 0 var(--space-2);
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.scroller > * {
+  width: 100%;
+  max-width: 840px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 /*
@@ -153,11 +180,13 @@
   gap: var(--space-2);
   margin: 0;
   padding: var(--space-2) var(--space-4);
-  border: var(--border-width) solid var(--color-warning);
+  border: var(--border-width) solid color-mix(in srgb, var(--color-warning) 35%, var(--color-border));
   border-radius: var(--radius-full);
   background: var(--color-warning-soft);
   color: var(--color-warning);
   font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  box-shadow: var(--shadow-card);
 }
 
 /*
@@ -201,11 +230,13 @@
 }
 
 /* Under the scroller, so it is at the foot of the window whatever the
-   transcript is doing. */
+   transcript is doing. Held to the transcript's measure. */
 .composer {
   flex: none;
-  padding: var(--space-3) 0 var(--space-4);
-  background: var(--color-bg);
+  width: 100%;
+  max-width: 840px;
+  margin: 0 auto;
+  padding: var(--space-2) 0 var(--space-4);
 }
 
 /* The `git status --short` a refused archive quoted back, inside the shared
@@ -223,8 +254,22 @@
 }
 
 @media (max-width: 900px) {
+  .page {
+    padding: 0 var(--space-4);
+  }
+
   .body {
     flex-direction: column;
+  }
+
+  .stateNotice {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "title"
+      "body"
+      "action";
+    justify-items: start;
+    gap: var(--space-2);
   }
 }
 

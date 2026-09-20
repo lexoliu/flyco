@@ -19,6 +19,7 @@ import {
   SquarePen,
   Sun,
 } from "lucide-solid";
+import Logomark, { FLYCO_MARK } from "./Logomark";
 import Popover from "./Popover";
 import ProblemNotice from "./ProblemNotice";
 import { ReadinessProvider } from "./Readiness";
@@ -149,6 +150,7 @@ export default function AppShell(props: { children?: JSX.Element }) {
               >
                 <div class={styles.brandRow}>
                   <A href="/" class={styles.brand}>
+                    <Logomark mark={FLYCO_MARK} class={styles.brandMark} />
                     flyco
                   </A>
                   <button

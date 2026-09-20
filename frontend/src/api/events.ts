@@ -41,6 +41,15 @@ const SILENCE_LIMIT_MS = 90_000;
 /** How often the watchdog checks the last-byte clock. */
 const WATCHDOG_MS = 5_000;
 
+/**
+ * How long a stream must hold before its drop resets the reconnect
+ * ladder. A stream that held this long was established; its drop restarts
+ * from the first rung, while a shorter life climbs — the daemon's
+ * `ATTACH_STABLE` rule, so a server that accepts the SSE and closes it a
+ * second later cannot be re-requested at the floor forever.
+ */
+export const STABLE_MS = 10_000;
+
 export interface BackoffOptions {
   /** Delay for the first retry, before jitter. Default 1000ms. */
   baseMs?: number;
@@ -238,11 +247,19 @@ export function createUserStream(options: UserStreamOptions = {}): UserStream {
       if (!running) {
         return;
       }
-      attempt = 0;
+      // The ladder resets on a stream that *held*, not on one that merely
+      // opened — the open alone proves nothing about the connection.
+      const openedAt = Date.now();
       setFailure(null);
       setState("live");
       announce("live");
-      await pump(response);
+      try {
+        await pump(response);
+      } finally {
+        if (Date.now() - openedAt >= STABLE_MS) {
+          attempt = 0;
+        }
+      }
       if (!running) {
         return;
       }
@@ -267,17 +284,20 @@ export function createUserStream(options: UserStreamOptions = {}): UserStream {
         }
         return;
       }
-      scheduleReconnect();
+      scheduleReconnect(error);
     }
   }
 
-  function scheduleReconnect(): void {
+  function scheduleReconnect(error?: unknown): void {
     if (!running) {
       return;
     }
     setState("reconnecting");
     announce("reconnecting");
-    const delay = nextBackoffDelay(attempt, options.backoff);
+    // A 429's Retry-After is a wait, not a transport error: it floors the
+    // delay whatever rung the ladder is on.
+    const retryAfterMs = error instanceof ApiProblem ? error.retryAfterMs : undefined;
+    const delay = Math.max(nextBackoffDelay(attempt, options.backoff), retryAfterMs ?? 0);
     attempt += 1;
     reconnectTimer = setTimeout(() => {
       void connect();

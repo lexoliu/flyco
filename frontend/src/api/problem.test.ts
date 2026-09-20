@@ -53,6 +53,27 @@ describe("problemFromResponse", () => {
     expect(error).not.toBeInstanceOf(NotImplementedError);
   });
 
+  it("carries an integer Retry-After header on the problem as retryAfterMs", async () => {
+    // A 429 from the request budget always names its wait; the reconnect
+    // loop reads it off the error rather than the response.
+    const response = problemResponse(429, "https://flyco.dev/problems/rate-limited");
+    response.headers.set("retry-after", "30");
+    const error = await problemFromResponse(response);
+    expect(error).toBeInstanceOf(ApiProblem);
+    expect((error as ApiProblem).retryAfterMs).toBe(30_000);
+  });
+
+  it("treats an HTTP-date Retry-After — or none — as absent", async () => {
+    const dated = problemResponse(429, "https://flyco.dev/problems/rate-limited");
+    dated.headers.set("retry-after", "Wed, 16 Sep 2026 12:00:00 GMT");
+    const datedError = (await problemFromResponse(dated)) as ApiProblem;
+    expect(datedError.retryAfterMs).toBeUndefined();
+
+    const plain = problemResponse(429, "https://flyco.dev/problems/rate-limited");
+    const plainError = (await problemFromResponse(plain)) as ApiProblem;
+    expect(plainError.retryAfterMs).toBeUndefined();
+  });
+
   it("wraps a non-problem body in UnexpectedResponseError", async () => {
     const response = new Response("<html>502 Bad Gateway</html>", {
       status: 502,

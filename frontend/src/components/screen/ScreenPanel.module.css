@@ -64,7 +64,7 @@
 }
 
 .stage.driving {
-  border-color: var(--color-accent, var(--color-text));
+  border-color: var(--color-text);
 }
 
 .stage.driving .canvas {

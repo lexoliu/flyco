@@ -1,3 +1,8 @@
+/*
+ * The wordmark, one line, and the sign-in button (docs/ux.md §3): a card
+ * in the middle of an otherwise empty page, so the one thing to do is the
+ * one thing on it.
+ */
 .page {
   flex: 1;
   display: flex;
@@ -7,22 +12,38 @@
 }
 
 .card {
-  width: min(380px, 100%);
+  width: min(400px, 100%);
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
+  padding: var(--space-7) var(--space-6);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-raised);
 }
 
 .wordmark {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   margin: 0;
   font-size: var(--text-2xl);
   font-weight: var(--weight-semibold);
-  letter-spacing: -0.03em;
+  letter-spacing: var(--tracking-tight);
+}
+
+.wordmarkMark {
+  width: 30px;
+  height: 30px;
+  color: var(--color-text);
 }
 
 .lede {
   margin: 0;
   color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: var(--line-relaxed);
 }
 
 .githubButton {
@@ -30,18 +51,26 @@
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
+  height: 40px;
   border: none;
   border-radius: var(--radius-full);
   background: var(--color-primary);
   color: var(--color-primary-text);
-  padding: var(--space-3) var(--space-4);
+  padding: 0 var(--space-4);
   font-size: var(--text-md);
   font-weight: var(--weight-medium);
   margin-top: var(--space-2);
+  transition:
+    background var(--transition-fast),
+    transform var(--transition-fast);
 }
 
 .githubButton:hover {
   background: var(--color-primary-hover);
+}
+
+.githubButton:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .githubButton:disabled {

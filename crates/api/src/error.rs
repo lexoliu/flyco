@@ -647,18 +647,6 @@ pub enum ApiError {
     )]
     DesktopTakeoverRequired,
 
-    /// The room has no answer to this question yet.
-    ///
-    /// Internal to the Worker⇄room hop and never rendered for a browser:
-    /// the Worker polls the room while it holds the browser's request open,
-    /// and this is the "not yet" it polls against. What a browser is told
-    /// when the polling runs out is [`WorkdirTimeout`](Self::WorkdirTimeout).
-    #[error(
-        "the room has not been given this answer yet",
-        status = StatusCode::NOT_FOUND
-    )]
-    WorkdirNotAnsweredYet,
-
     /// The daemon did not answer a question about the checkout in time.
     #[error(
         "the session's daemon did not answer a question about its checkout in time",
@@ -1254,6 +1242,48 @@ pub enum ApiError {
     )]
     RowBudgetExceeded,
 
+    /// A caller sent more requests in a minute than its class may.
+    ///
+    /// Raised by [`crate::request_budget`] before any storage is read,
+    /// keyed by the presented credential: the fast loop — a client
+    /// re-requesting at line rate — is what this stops. `Retry-After`
+    /// names the window.
+    #[error(
+        "this {class} sent more requests than its per-minute limit allows; retry after {retry_after} seconds",
+        status = StatusCode::TOO_MANY_REQUESTS
+    )]
+    RateLimited {
+        /// The class of caller whose limit was hit.
+        class: crate::request_budget::Class,
+        /// Seconds until the window turns over.
+        retry_after: u64,
+    },
+
+    /// A principal spent its daily request ceiling and is refused until
+    /// UTC midnight.
+    ///
+    /// Raised by [`crate::request_budget`]: the slow loop — a client
+    /// inside the per-minute limit that would still spend the account's
+    /// day — is what this stops. `Retry-After` names the time to midnight.
+    #[error(
+        "this {class} exhausted its daily request budget; it resets at UTC midnight, in {retry_after} seconds",
+        status = StatusCode::TOO_MANY_REQUESTS
+    )]
+    RequestBudgetExhausted {
+        /// The class of caller whose ceiling was reached.
+        class: crate::request_budget::Class,
+        /// Seconds until UTC midnight.
+        retry_after: u64,
+    },
+
+    /// The per-minute limiter itself could not answer.
+    ///
+    /// A missing or mistyped Rate Limiting binding. The request is
+    /// refused rather than let through: the one bound that costs nothing
+    /// must not be the first to fail open under load.
+    #[error("the request limiter is unavailable: {0}")]
+    RateLimiterUnavailable(String),
+
     /// Object storage failed.
     #[error("object storage failed: {0}")]
     Storage(#[from] StorageError),
@@ -1587,7 +1617,6 @@ impl ApiError {
             Self::SessionDaemonOffline => "session-daemon-offline",
             Self::DesktopWatcherGone => "desktop-watcher-gone",
             Self::DesktopTakeoverRequired => "desktop-takeover-required",
-            Self::WorkdirNotAnsweredYet => "workdir-not-answered-yet",
             Self::WorkdirTimeout => "workdir-timeout",
             Self::PathNotFound { .. } => "path-not-found",
             Self::PathOutsideCheckout { .. } => "path-outside-checkout",
@@ -1643,6 +1672,8 @@ impl ApiError {
             Self::RelayUnavailable(_) => "relay-unavailable",
             Self::Room(_) | Self::RoomRefused(_) => "session-room-unavailable",
             Self::RowBudgetExceeded => "row-budget-exhausted",
+            Self::RateLimited { .. } => "rate-limited",
+            Self::RequestBudgetExhausted { .. } => "request-budget-exhausted",
             Self::GithubCodeRejected(_) => "github-code-rejected",
             Self::GithubTokenRevoked => "github-token-revoked",
             Self::GithubStatus(_) => "github-status",
@@ -1653,7 +1684,8 @@ impl ApiError {
             | Self::Db(_)
             | Self::Queue(_)
             | Self::Storage(_)
-            | Self::Crypto(_) => "internal",
+            | Self::Crypto(_)
+            | Self::RateLimiterUnavailable(_) => "internal",
         }
     }
 
@@ -1750,10 +1782,29 @@ impl ApiError {
         }
     }
 
+    /// The `Retry-After` a refusal carries, in seconds, when it is one a
+    /// client should wait out rather than act on.
+    ///
+    /// Every `429` names its wait: the per-minute window, the time to UTC
+    /// midnight for a spent daily budget, and the same midnight for a
+    /// durable object whose row budget is spent. Clients read this header
+    /// and sleep at least that long — the contract `AGENTS.md` states.
+    #[must_use]
+    pub fn retry_after(&self) -> Option<u64> {
+        match self {
+            Self::RateLimited { retry_after, .. }
+            | Self::RequestBudgetExhausted { retry_after, .. } => Some(*retry_after),
+            Self::RowBudgetExceeded => Some(crate::request_budget::until_midnight(
+                crate::clock::now_unix(),
+            )),
+            _ => None,
+        }
+    }
+
     /// Renders this failure as a complete response.
     #[must_use]
     pub fn into_response(self) -> Response {
-        problem::response(&self.problem(), self.challenge())
+        problem::response(&self.problem(), self.challenge(), self.retry_after())
     }
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDesktopFeed, type DesktopListener } from "./desktop";
+import { createDesktopFeed, STABLE_MS, type DesktopListener } from "./desktop";
 
 const SESSION = "session-1";
 
@@ -95,12 +95,50 @@ function problem(status: number): Response {
   );
 }
 
+function sseResponse(stream: ReturnType<typeof sseBody>): Response {
+  return new Response(stream.body, {
+    status: 200,
+    headers: { "Content-Type": "text/event-stream" },
+  });
+}
+
+/** A 429 problem document carrying `Retry-After`, as the request budget answers. */
+function rateLimited(seconds: number): Response {
+  return new Response(
+    JSON.stringify({
+      type: "https://flyco.dev/problems/rate-limited",
+      title: "Too Many Requests",
+      status: 429,
+      detail: "per-minute request budget reached",
+    }),
+    {
+      status: 429,
+      headers: {
+        "Content-Type": "application/problem+json",
+        "Retry-After": String(seconds),
+      },
+    },
+  );
+}
+
+/**
+ * Flushes the async connect/pump chain without moving the fake clock —
+ * stream reads and fetch resolution are microtasks, not timers.
+ */
+async function flush(rounds = 20): Promise<void> {
+  for (let i = 0; i < rounds; i += 1) {
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+  }
+}
+
 const feedOptions = {
   backoff: { baseMs: 1, random: () => 0 },
   pauseWhenHidden: false,
 };
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -197,5 +235,117 @@ describe("createDesktopFeed", () => {
     stub.tail.close();
     await settle();
     expect(stub.calls.length).toBe(1);
+  });
+
+  it("climbs the ladder across streams that open and die at once", async () => {
+    // A stream that closes a second after opening proves the connection
+    // was never established: the retry must climb, not stay at the floor
+    // re-requesting every fraction of a second forever.
+    vi.useFakeTimers();
+    const first = sseBody();
+    const second = sseBody();
+    const third = sseBody();
+    const stub = stubStreams(
+      () => sseResponse(first),
+      () => sseResponse(second),
+      () => sseResponse(third),
+    );
+    const feed = createDesktopFeed(SESSION, {
+      listener: recording(),
+      backoff: { baseMs: 1000, random: () => 0.5 },
+      pauseWhenHidden: false,
+    });
+    await flush();
+    expect(stub.calls).toHaveLength(1);
+
+    // Rung 0: 0.5 * 1000 = 500ms.
+    first.close();
+    await flush();
+    expect(feed.state()).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(499);
+    expect(stub.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(stub.calls).toHaveLength(2);
+
+    // Rung 1: 1000ms — the ladder climbed rather than resetting on open.
+    second.close();
+    await flush();
+    await vi.advanceTimersByTimeAsync(999);
+    expect(stub.calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(stub.calls).toHaveLength(3);
+
+    // Rung 2: 2000ms.
+    third.close();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(stub.calls).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(stub.calls).toHaveLength(4);
+
+    feed.dispose();
+  });
+
+  it("restarts at the first rung after a stream that held past STABLE_MS drops", async () => {
+    vi.useFakeTimers();
+    const first = sseBody();
+    const second = sseBody();
+    const stub = stubStreams(
+      () => sseResponse(first),
+      () => sseResponse(second),
+    );
+    const feed = createDesktopFeed(SESSION, {
+      listener: recording(),
+      backoff: { baseMs: 1000, random: () => 0.5 },
+      pauseWhenHidden: false,
+    });
+    await flush();
+
+    // A quick death climbs to rung 1...
+    first.close();
+    await flush();
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(stub.calls).toHaveLength(2);
+
+    // ...but the second stream held past STABLE_MS, so its drop was an
+    // established connection dying: back to rung 0's 500ms, not 1000ms.
+    await vi.advanceTimersByTimeAsync(STABLE_MS + 1000);
+    second.close();
+    await flush();
+    await vi.advanceTimersByTimeAsync(499);
+    expect(stub.calls).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(stub.calls).toHaveLength(3);
+
+    feed.dispose();
+  });
+
+  it("waits out Retry-After on a 429 instead of re-requesting at once", async () => {
+    vi.useFakeTimers();
+    const stub = stubStreams(() => rateLimited(30));
+    const feed = createDesktopFeed(SESSION, {
+      listener: recording(),
+      backoff: { baseMs: 1000, random: () => 0.5 },
+      pauseWhenHidden: false,
+    });
+    await flush();
+    expect(stub.calls).toHaveLength(1);
+    // A 429 is a wait, not a definitive failure: the feed stays on the
+    // reconnect path, held by Retry-After rather than the 500ms rung.
+    expect(feed.state()).toBe("reconnecting");
+
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(stub.calls).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(stub.calls).toHaveLength(2);
+    expect(feed.state()).toBe("live");
+
+    feed.dispose();
   });
 });

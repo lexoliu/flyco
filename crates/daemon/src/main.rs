@@ -163,6 +163,18 @@ impl From<host::HostError> for Failure {
     }
 }
 
+impl Failure {
+    /// The wait the control plane named, when what stopped `flycod` was a
+    /// refusal carrying `Retry-After`.
+    fn retry_after(&self) -> Option<core::time::Duration> {
+        match self {
+            Self::Wire(wire) => wire.retry_after(),
+            Self::Host(host) => host.retry_after(),
+            _ => None,
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     // stdout carries the REPL's structured output, so every diagnostic goes
@@ -182,6 +194,18 @@ async fn main() -> ExitCode {
             while let Some(cause) = source {
                 tracing::error!(%cause, "caused by");
                 source = cause.source();
+            }
+            // A refusal that named a wait is honoured before the unit is
+            // allowed to restart this process: `Restart=on-failure` with
+            // five seconds between attempts would otherwise spend the
+            // request budget the control plane just said is spent, five
+            // seconds at a time, until UTC midnight (issue #342).
+            if let Some(wait) = failure.retry_after() {
+                tracing::warn!(
+                    ?wait,
+                    "the control plane asked this daemon to wait; sleeping before the unit restarts it"
+                );
+                tokio::time::sleep(wait).await;
             }
             ExitCode::FAILURE
         }
