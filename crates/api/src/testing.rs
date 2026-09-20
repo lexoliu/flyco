@@ -9,6 +9,7 @@ use flyco_core::{
 use skyzen::routing::Router;
 use skyzen::sql;
 use skyzen::{Body, Method, Request};
+use skyzen_services::durable::DurableDb;
 use skyzen_services::{Db, Queue};
 use skyzen_test::mock::InMemoryQueue;
 
@@ -225,6 +226,14 @@ pub fn room_request(
         skyzen::header::HeaderValue::from_static("application/json"),
     );
     request
+}
+
+/// The rows a durable object's `row_budget` ledger says it read today.
+pub async fn rows_billed(db: &DurableDb) -> u64 {
+    db.query("SELECT COALESCE(SUM(rows_read), 0) FROM row_budget")
+        .fetch_scalar::<u64>()
+        .await
+        .expect("the ledger reads")
 }
 
 /// The display name [`TestGithub`] reports, which is what a session's
