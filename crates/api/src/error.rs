@@ -269,14 +269,6 @@ pub enum ApiError {
     )]
     DevinOauthAttemptExpired,
 
-    /// The `state` in the pasted redirect URL is not the one this attempt
-    /// was started with.
-    #[error(
-        "this code belongs to a different Devin sign-in than the one it was pasted into",
-        status = StatusCode::BAD_REQUEST
-    )]
-    DevinOauthStateMismatch,
-
     /// Devin refused the grant, and said why when it would.
     ///
     /// A caller error rather than an outage: the code was mistyped,
@@ -1580,7 +1572,6 @@ impl ApiError {
             Self::CodexOauthRejected { .. } => "codex-oauth-rejected",
             Self::OpenAi(_) => "openai-unavailable",
             Self::DevinOauthAttemptExpired => "devin-oauth-attempt-expired",
-            Self::DevinOauthStateMismatch => "devin-oauth-state-mismatch",
             Self::DevinOauthRejected { .. } => "devin-oauth-rejected",
             Self::ProviderOauthAttemptExpired => "provider-oauth-attempt-expired",
             Self::ProviderOauthNotAuthorized => "provider-oauth-not-authorized",

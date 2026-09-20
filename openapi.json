@@ -1398,7 +1398,7 @@
                   },
                   "code": {
                     "type": "string",
-                    "description": "The URL Devin's redirect left in the address bar —\n`http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code\nalone, for a user who copied only the parameter out of it."
+                    "description": "The authorization code Devin's page shows after sign-in, as the\nuser copied it."
                   }
                 }
               }
@@ -1492,11 +1492,11 @@
                   "properties": {
                     "attempt_id": {
                       "$ref": "#/components/schemas/Uuid",
-                      "description": "Names the verifier and `state` the completion must be redeemed\nagainst."
+                      "description": "Names the verifier the completion must be redeemed against."
                     },
                     "authorize_url": {
                       "type": "string",
-                      "description": "Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open."
+                      "description": "Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open.\nIt is the CLI's manual flow, so after sign-in the page shows the\ncode rather than redirecting anywhere."
                     }
                   }
                 }
@@ -9278,7 +9278,7 @@
           },
           "code": {
             "type": "string",
-            "description": "The URL Devin's redirect left in the address bar —\n`http://127.0.0.1:59653/callback?code=…&state=…` — or the bare code\nalone, for a user who copied only the parameter out of it."
+            "description": "The authorization code Devin's page shows after sign-in, as the\nuser copied it."
           }
         }
       },
@@ -10386,11 +10386,11 @@
         "properties": {
           "attempt_id": {
             "$ref": "#/components/schemas/Uuid",
-            "description": "Names the verifier and `state` the completion must be redeemed\nagainst."
+            "description": "Names the verifier the completion must be redeemed against."
           },
           "authorize_url": {
             "type": "string",
-            "description": "Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open."
+            "description": "Fully-formed `https://app.devin.ai/auth/cli/continue` URL to open.\nIt is the CLI's manual flow, so after sign-in the page shows the\ncode rather than redirecting anywhere."
           }
         }
       },

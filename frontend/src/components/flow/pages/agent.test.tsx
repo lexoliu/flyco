@@ -28,7 +28,7 @@ const AUTHORIZE_URL =
   "https://claude.ai/oauth/authorize?code=true&client_id=test&state=the-state";
 const ATTEMPT = "11111111-2222-4333-8444-555555555555";
 const DEVIN_AUTHORIZE_URL =
-  "https://app.devin.ai/auth/cli/continue?redirect_uri=http%3A%2F%2F127.0.0.1%3A59653%2Fcallback&state=the-state";
+  "https://app.devin.ai/auth/cli/continue?state=the-state&prompt=select_account&code_challenge=the-challenge&code_challenge_method=S256&cli_pkce_marker=1";
 const DEVIN_ATTEMPT = "77777777-6666-4555-8444-333333333333";
 const DEVICE_URL = "https://auth.openai.com/codex/device";
 const CODEX_ATTEMPT = "99999999-8888-4777-8666-555555555555";
@@ -371,7 +371,7 @@ describe("Claude Code, opened for it alone", () => {
 });
 
 describe("Devin, opened for it alone", () => {
-  it("opens on its sign-in page and finishes when the pasted redirect links", async () => {
+  it("opens on its sign-in page and finishes when the pasted code links", async () => {
     const opened = vi.spyOn(window, "open").mockReturnValue(null);
     const { container, findByRole, findByLabelText, getAllByText, getByText, onDone } =
       renderFlow(["agent"], { agents: ["devin"] });
@@ -385,7 +385,7 @@ describe("Devin, opened for it alone", () => {
     expect(document.querySelector("#devin-oauth-code")).toBeNull();
 
     fireEvent.click(primary(container));
-    const field = await findByLabelText("Address or code from Devin");
+    const field = await findByLabelText("Code from Devin");
     expect(opened).toHaveBeenCalledWith(
       DEVIN_AUTHORIZE_URL,
       "_blank",
@@ -393,63 +393,41 @@ describe("Devin, opened for it alone", () => {
     );
     await findByRole("heading", {
       level: 1,
-      name: "Paste the address Devin sent you to",
+      name: "Paste the code Devin shows you",
     });
-    // The dead redirect is explained, not hidden.
-    expect(getAllByText(/127\.0\.0\.1/).length).toBeGreaterThan(0);
+    // No localhost address anywhere: the page shows a code, and that is
+    // all the user is asked for.
+    expect(getAllByText(/Devin shows a code/).length).toBeGreaterThan(0);
+    expect(container.textContent).not.toMatch(/127\.0\.0\.1/);
 
     expect(primary(container)).toHaveTextContent("Link Devin");
     expect(primary(container)).toBeDisabled();
     expect(primary(container)).toHaveAttribute(
       "title",
-      "Paste the address Devin left in the address bar to continue",
+      "Paste the code Devin showed you to continue",
     );
 
-    type(
-      field,
-      "http://127.0.0.1:59653/callback?code=the-code&state=the-state",
-    );
+    type(field, "  the-code  ");
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
     await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
-    // The paste is sent whole: the control plane reads the code out of it.
-    expect(postedTo("/v1/harness-accounts/devin/oauth/complete")).toEqual({
-      attempt_id: DEVIN_ATTEMPT,
-      code: "http://127.0.0.1:59653/callback?code=the-code&state=the-state",
-    });
-  });
-
-  it("redeems a bare code the same way", async () => {
-    const { container, findByRole, findByLabelText, onDone } = renderFlow(
-      ["agent"],
-      { agents: ["devin"] },
-    );
-    await findByRole("heading", { level: 1, name: "Link Devin" });
-    fireEvent.click(primary(container));
-
-    type(await findByLabelText("Address or code from Devin"), "  the-code  ");
-    await waitFor(() => expect(primary(container)).toBeEnabled());
-    fireEvent.click(primary(container));
-
-    await waitFor(() => expect(onDone).toHaveBeenCalledOnce());
+    // The code is sent as pasted, less the whitespace the copy picked up.
     expect(postedTo("/v1/harness-accounts/devin/oauth/complete")).toEqual({
       attempt_id: DEVIN_ATTEMPT,
       code: "the-code",
     });
   });
 
-  it("keeps the button off for the dead address alone, and for a paste with no code", async () => {
+  it("keeps the button off while the field is blank", async () => {
     const { container, findByRole, findByLabelText } = renderFlow(["agent"], {
       agents: ["devin"],
     });
     await findByRole("heading", { level: 1, name: "Link Devin" });
     fireEvent.click(primary(container));
-    const field = await findByLabelText("Address or code from Devin");
+    const field = await findByLabelText("Code from Devin");
 
-    type(field, "http://127.0.0.1:59653/callback");
-    expect(primary(container)).toBeDisabled();
-    type(field, "http://127.0.0.1:59653/callback?state=the-state");
+    type(field, "   ");
     expect(primary(container)).toBeDisabled();
   });
 
@@ -472,10 +450,7 @@ describe("Devin, opened for it alone", () => {
     await findByRole("heading", { level: 1, name: "Link Devin" });
     fireEvent.click(primary(container));
 
-    type(
-      await findByLabelText("Address or code from Devin"),
-      "http://127.0.0.1:59653/callback?code=stale&state=the-state",
-    );
+    type(await findByLabelText("Code from Devin"), "stale");
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
 
@@ -485,7 +460,7 @@ describe("Devin, opened for it alone", () => {
     expect(
       getByRole("heading", {
         level: 1,
-        name: "Paste the address Devin sent you to",
+        name: "Paste the code Devin shows you",
       }),
     ).toBeInTheDocument();
   });
@@ -502,7 +477,7 @@ describe("Devin, opened for it alone", () => {
       renderFlow(["agent"], { agents: ["devin"] });
     await findByRole("heading", { level: 1, name: "Link Devin" });
     fireEvent.click(primary(container));
-    const field = await findByLabelText("Address or code from Devin");
+    const field = await findByLabelText("Code from Devin");
     type(field, "the-code");
     await waitFor(() => expect(primary(container)).toBeEnabled());
     fireEvent.click(primary(container));
@@ -523,7 +498,7 @@ describe("Devin, opened for it alone", () => {
     expect(
       getByRole("heading", {
         level: 1,
-        name: "Paste the address Devin sent you to",
+        name: "Paste the code Devin shows you",
       }),
     ).toBeInTheDocument();
   });
