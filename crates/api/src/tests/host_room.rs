@@ -48,7 +48,7 @@ impl Room {
     async fn open() -> Self {
         Self {
             host: flyco_core::HostId::generate(),
-            object: HostRoom,
+            object: HostRoom::default(),
             db: InMemoryDurableDb::in_memory()
                 .await
                 .expect("an in-memory database"),

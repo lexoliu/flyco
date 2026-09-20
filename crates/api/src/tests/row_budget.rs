@@ -99,7 +99,7 @@ async fn one_objects_budget_leaves_anothers_alone() {
 #[skyzen::test]
 async fn an_empty_events_page_leaves_the_ledger_unwritten() {
     let session = SessionId::generate();
-    let mut object = SessionRoom;
+    let mut object = SessionRoom::default();
     let backend = InMemoryDurableDb::in_memory()
         .await
         .expect("an in-memory database");
@@ -131,7 +131,7 @@ async fn an_empty_events_page_leaves_the_ledger_unwritten() {
 #[skyzen::test]
 async fn an_events_page_is_billed_the_rows_it_returned() {
     let session = SessionId::generate();
-    let mut object = SessionRoom;
+    let mut object = SessionRoom::default();
     let backend = InMemoryDurableDb::in_memory()
         .await
         .expect("an in-memory database");
@@ -181,7 +181,7 @@ async fn an_events_page_is_billed_the_rows_it_returned() {
 #[skyzen::test]
 async fn a_room_past_its_budget_answers_429() {
     let session = SessionId::generate();
-    let mut object = SessionRoom;
+    let mut object = SessionRoom::default();
     let backend = InMemoryDurableDb::in_memory()
         .await
         .expect("an in-memory database");

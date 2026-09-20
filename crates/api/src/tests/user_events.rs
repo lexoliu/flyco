@@ -42,7 +42,7 @@ impl Buffer {
     async fn open() -> Self {
         Self {
             user: UserId::generate(),
-            object: UserEvents,
+            object: UserEvents::default(),
             db: InMemoryDurableDb::in_memory()
                 .await
                 .expect("an in-memory database"),
