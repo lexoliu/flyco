@@ -13,7 +13,16 @@
  * it. Opening moves focus into the panel, which is what makes the keyboard
  * path work and what makes "focus left" a usable close condition.
  */
-import { type JSX, Show, createEffect, createSignal, createUniqueId, on, onCleanup } from "solid-js";
+import {
+  type JSX,
+  Show,
+  createEffect,
+  createSignal,
+  createUniqueId,
+  on,
+  onCleanup,
+  untrack,
+} from "solid-js";
 import { cx } from "../lib/cx";
 import styles from "./Popover.module.css";
 
@@ -261,7 +270,17 @@ export default function Popover(props: PopoverProps) {
           aria-labelledby={triggerId}
           tabindex="-1"
         >
-          {props.children(close)}
+          {/*
+            Built once per opening, whatever the body reads while it is
+            being built. Left tracked, a body whose setup reads a prop — the
+            model picker seeding its slider from the current choice — is
+            torn down and rebuilt on every change of that prop, which is
+            every move of the slider: the range input under the pointer is
+            replaced mid-drag, the drag dies with it, and the focus that
+            leaves the removed input reads to the anchor as leaving the
+            panel (issue #366).
+          */}
+          {untrack(() => props.children(close))}
         </div>
       </Show>
     </div>
