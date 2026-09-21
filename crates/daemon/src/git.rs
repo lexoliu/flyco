@@ -850,7 +850,7 @@ fn finished(
 
 #[cfg(test)]
 mod tests {
-    use super::{GitWorkdir, WorkingTree, clone_from};
+    use super::{GitWorkdir, Stdio, WorkingTree, clone_from};
     use crate::config::{GitIdentity, GithubAccess, RepoConfig};
     use uuid::Uuid;
 
@@ -883,6 +883,40 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A `git daemon` that dies with the test that started it.
+    ///
+    /// The kill has to survive a panic: an assertion between the spawn and
+    /// the end of the test would otherwise leave the daemon running for as
+    /// long as the machine is up, holding the port and the scratch
+    /// directory it was given.
+    ///
+    /// Killing the spawned child is not enough. `git` is reached through a
+    /// shim that forks, so the process this fixture holds a handle to exits
+    /// at once and the process actually listening on the port is reparented
+    /// to `init` — which is why the daemon is asked for a `--pid-file` and
+    /// that is what gets signalled.
+    struct Daemon {
+        child: std::process::Child,
+        pid_file: std::path::PathBuf,
+    }
+
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            if let Ok(recorded) = std::fs::read_to_string(&self.pid_file)
+                && let Ok(pid) = recorded.trim().parse::<u32>()
+            {
+                let _ = std::process::Command::new("kill")
+                    .arg(pid.to_string())
+                    .status();
+            }
+            let _ = self.child.kill();
+            // `kill` only sends the signal; `wait` is what reaps the child
+            // — without it the shim stays a zombie until the test binary
+            // exits.
+            let _ = self.child.wait();
         }
     }
 
@@ -997,19 +1031,31 @@ mod tests {
             .local_addr()
             .expect("read the bound port")
             .port();
-        let mut daemon = std::process::Command::new("git")
-            .args([
-                "daemon",
-                "--export-all",
-                "--reuseaddr",
-                "--listen=127.0.0.1",
-                &format!("--port={port}"),
-                &format!("--base-path={}", scratch.0.display()),
-            ])
-            .arg(&scratch.0)
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .expect("spawn git daemon");
+        let pid_file = scratch.child("git-daemon.pid");
+        let daemon = Daemon {
+            child: std::process::Command::new("git")
+                .args([
+                    "daemon",
+                    "--export-all",
+                    "--reuseaddr",
+                    "--listen=127.0.0.1",
+                    &format!("--port={port}"),
+                    &format!("--base-path={}", scratch.0.display()),
+                    &format!("--pid-file={}", pid_file.display()),
+                ])
+                .arg(&scratch.0)
+                // Every stream is closed, stdout included. A daemon that
+                // outlives this test inherits whatever the test runner's
+                // stdout is, and `cargo test | tail` then waits on a pipe
+                // nobody will ever close: the run looks hung for as long as
+                // the stray daemon lives.
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn git daemon"),
+            pid_file,
+        };
         // `spawn` returns before the daemon has bound its port — a client
         // that lands first is refused, so the fixture waits for the
         // listener it asked for.
@@ -1045,18 +1091,15 @@ mod tests {
         );
 
         let workdir = scratch.child("work");
-        let outcome = clone_from(
+        clone_from(
             bare.to_str().expect("a UTF-8 path"),
             &repo_config("main"),
             &access(),
             &workdir,
         )
-        .await;
-        let _ = daemon.kill();
-        // `kill` only sends the signal; `wait` is what reaps the child —
-        // without it the daemon stays a zombie until the test exits.
-        let _ = daemon.wait();
-        outcome.expect("the recursive clone succeeds");
+        .await
+        .expect("the recursive clone succeeds");
+        drop(daemon);
 
         assert!(
             workdir.join("deps/sub/README.md").is_file(),
