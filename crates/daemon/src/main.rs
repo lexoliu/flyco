@@ -329,13 +329,27 @@ async fn report_failure_to<T>(
 /// such a directory, which [`skills::target`] decides: Claude's config
 /// tree gets the `Claude` scope, Codex's `CODEX_HOME` gets the `Codex`
 /// one, and any other ACP agent gets nothing.
+///
+/// A control plane that cannot be reached is warned about, not failed
+/// on: the machine still has its checkout and a working harness, and a
+/// network error is nothing the user can fix from the browser — the same
+/// reasoning as [`conversation_to_continue`]. A bundle that arrived but
+/// cannot be unpacked is the opposite case: the failure names the skill,
+/// and the user can act on it.
 async fn install_skills(config: &DaemonConfig, api: &HttpControlApi) -> Result<(), Failure> {
     let Some(target) = skills::target(config) else {
         return Ok(());
     };
-    let mounts = api.list_skills().await.map_err(skills::SkillError::from)?;
-    skills::install(api, &mounts, &target).await?;
-    Ok(())
+    match skills::install(api, &target).await {
+        Err(skills::SkillError::Control(error)) => {
+            tracing::warn!(
+                %error,
+                "the control plane could not serve the session's skills; starting without them"
+            );
+            Ok(())
+        }
+        outcome => Ok(outcome?),
+    }
 }
 
 /// Which harness conversation this daemon must continue.

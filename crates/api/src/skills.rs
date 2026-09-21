@@ -6,9 +6,10 @@
 //! the harness it belongs to therefore ride the query string, which is what
 //! keeps the body exactly the bytes that get stored.
 //!
-//! Agents cannot write either harness's skills directory — it is read-only
-//! and a hook refuses the write — so an agent that wants to publish a skill
-//! calls the `skill_upload` MCP tool, which lands on this same route.
+//! Agents cannot write either harness's skills directory — it is
+//! read-only — so a skill arrives only through the control plane: an
+//! upload on Settings → Tools lands on this route, and a marketplace
+//! install goes through [`crate::skill_catalog`] into the same `store`.
 //!
 //! # Where a bundle lives
 //!

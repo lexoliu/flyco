@@ -2,9 +2,11 @@
 //!
 //! Claude Code and Codex read their global skills from different
 //! directories, so a skill is stored against the [`SkillScope`] it belongs
-//! in and installed into that harness's directory. The agent cannot write
-//! either directory — it uploads through the `skill_upload` MCP tool, which
-//! lands here — and every live session picks up the change.
+//! in and installed into that harness's directory. A skill arrives by
+//! upload on Settings → Tools or installed from a plugin marketplace; the
+//! agent cannot write either directory, so publishing always goes through
+//! the control plane, and a machine picks the change up the next time its
+//! daemon starts.
 
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
