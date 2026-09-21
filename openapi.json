@@ -693,6 +693,147 @@
         }
       }
     },
+    "/v1/catalog/skills": {
+      "get": {
+        "summary": "Lists what every marketplace of the caller offers.",
+        "description": "Lists what every marketplace of the caller offers.",
+        "operationId": "flyco_api::skill_catalog::list_catalog_skills",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "Response of `GET /v1/catalog/skills`.\n\nA marketplace is either read, still being read, or unreadable, and the\nthree are kept apart: a picker that showed \"no skills\" for a repository\nit had not looked at yet would be lying.",
+                  "required": [
+                    "skills",
+                    "pending",
+                    "failed"
+                  ],
+                  "properties": {
+                    "failed": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/MarketplaceProblem"
+                      },
+                      "description": "Marketplaces that could not be read."
+                    },
+                    "pending": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Marketplaces still being read."
+                    },
+                    "skills": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CatalogSkill"
+                      },
+                      "description": "Every skill flyco can install, marketplace by marketplace."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Installs one catalog skill, once per harness the caller chose.",
+        "description": "Installs one catalog skill, once per harness the caller chose.",
+        "operationId": "flyco_api::skill_catalog::install_catalog_skill",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/catalog/skills`.",
+                "required": [
+                  "marketplace",
+                  "plugin",
+                  "name",
+                  "scopes"
+                ],
+                "properties": {
+                  "marketplace": {
+                    "type": "string",
+                    "description": "The marketplace repository, as the catalog listed it."
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "The skill's directory name, as the catalog listed it."
+                  },
+                  "plugin": {
+                    "type": "string",
+                    "description": "The plugin that carries it, as the catalog listed it. Two plugins\nof one marketplace may publish a skill under the same name, so the\nname alone does not say which directory to copy."
+                  },
+                  "scopes": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/SkillScope"
+                    },
+                    "description": "Which harnesses get it. Empty is a request that installs nothing and\nis refused."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.\n\nThe bundle itself is not part of this: a skill zip is object-storage\ncontent, not a JSON field.",
+                    "required": [
+                      "id",
+                      "name",
+                      "scope",
+                      "size_bytes",
+                      "uploaded_at_unix"
+                    ],
+                    "properties": {
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Directory name the bundle is installed under."
+                      },
+                      "scope": {
+                        "$ref": "#/components/schemas/SkillScope",
+                        "description": "Which harness gets it."
+                      },
+                      "size_bytes": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Size of the stored zip in bytes.",
+                        "minimum": 0
+                      },
+                      "uploaded_at_unix": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "When it was last uploaded, seconds since the Unix epoch.",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli-sessions": {
       "post": {
         "summary": "`POST /v1/cli-sessions` — opens a sign-in attempt.",
@@ -2626,6 +2767,179 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/v1/marketplaces": {
+      "get": {
+        "summary": "Lists the caller's marketplaces, the built-in one first.",
+        "description": "Lists the caller's marketplaces, the built-in one first.",
+        "operationId": "flyco_api::marketplaces::list_marketplaces",
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "One row of `GET /v1/marketplaces`.",
+                    "required": [
+                      "repo",
+                      "built_in"
+                    ],
+                    "properties": {
+                      "added_at_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "When it was added, seconds since the Unix epoch. Absent for the\nbuilt-in one, which nobody added.",
+                        "minimum": 0
+                      },
+                      "built_in": {
+                        "type": "boolean",
+                        "description": "Whether flyco provides it, in which case it cannot be removed."
+                      },
+                      "git_ref": {
+                        "type": [
+                          "string",
+                          "null"
+                        ],
+                        "description": "The branch or tag read, when the user pinned one. Absent reads the\nrepository's default branch."
+                      },
+                      "id": {
+                        "oneOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "$ref": "#/components/schemas/Uuid",
+                            "description": "Identifier, absent for the built-in marketplace."
+                          }
+                        ]
+                      },
+                      "repo": {
+                        "type": "string",
+                        "description": "The GitHub repository, `owner/name`."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Adds a marketplace and asks for it to be read.",
+        "description": "Adds a marketplace and asks for it to be read.",
+        "operationId": "flyco_api::marketplaces::add_marketplace",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/marketplaces`.",
+                "required": [
+                  "repo"
+                ],
+                "properties": {
+                  "git_ref": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "A branch or tag to pin. Omitted reads the default branch."
+                  },
+                  "repo": {
+                    "type": "string",
+                    "description": "The GitHub repository, `owner/name`."
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/marketplaces`.",
+                  "required": [
+                    "repo",
+                    "built_in"
+                  ],
+                  "properties": {
+                    "added_at_unix": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ],
+                      "format": "int64",
+                      "description": "When it was added, seconds since the Unix epoch. Absent for the\nbuilt-in one, which nobody added.",
+                      "minimum": 0
+                    },
+                    "built_in": {
+                      "type": "boolean",
+                      "description": "Whether flyco provides it, in which case it cannot be removed."
+                    },
+                    "git_ref": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "The branch or tag read, when the user pinned one. Absent reads the\nrepository's default branch."
+                    },
+                    "id": {
+                      "oneOf": [
+                        {
+                          "type": "null"
+                        },
+                        {
+                          "$ref": "#/components/schemas/Uuid",
+                          "description": "Identifier, absent for the built-in marketplace."
+                        }
+                      ]
+                    },
+                    "repo": {
+                      "type": "string",
+                      "description": "The GitHub repository, `owner/name`."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/marketplaces/{id}": {
+      "delete": {
+        "summary": "Removes one of the caller's marketplaces.",
+        "description": "Removes one of the caller's marketplaces.",
+        "operationId": "flyco_api::marketplaces::delete_marketplace",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done. There is nothing to return."
           }
         }
       }
@@ -8564,6 +8878,26 @@
   },
   "components": {
     "schemas": {
+      "AddMarketplace": {
+        "type": "object",
+        "description": "Request body of `POST /v1/marketplaces`.",
+        "required": [
+          "repo"
+        ],
+        "properties": {
+          "git_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A branch or tag to pin. Omitted reads the default branch."
+          },
+          "repo": {
+            "type": "string",
+            "description": "The GitHub repository, `owner/name`."
+          }
+        }
+      },
       "AgentMachineView": {
         "type": "object",
         "description": "What `GET /v1/sessions/{id}/agent/machine` tells a session's daemon.\n\nThe machine and *who chose it*, because the second changes what the agent\nmay do with the first: a machine the user picked is a decision flyco must\nnot quietly undo (docs/ux.md §9.5).",
@@ -9264,6 +9598,34 @@
               "null"
             ],
             "description": "The publisher's site, when they named one."
+          }
+        }
+      },
+      "CatalogSkill": {
+        "type": "object",
+        "description": "One skill a marketplace offers.",
+        "required": [
+          "marketplace",
+          "plugin",
+          "name",
+          "description"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What its `SKILL.md` says it is for."
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "The marketplace repository it comes from."
+          },
+          "name": {
+            "type": "string",
+            "description": "The directory name, which is what it is installed as."
+          },
+          "plugin": {
+            "type": "string",
+            "description": "The plugin inside that marketplace that carries it."
           }
         }
       },
@@ -12045,6 +12407,37 @@
           }
         }
       },
+      "InstallCatalogSkill": {
+        "type": "object",
+        "description": "Request body of `POST /v1/catalog/skills`.",
+        "required": [
+          "marketplace",
+          "plugin",
+          "name",
+          "scopes"
+        ],
+        "properties": {
+          "marketplace": {
+            "type": "string",
+            "description": "The marketplace repository, as the catalog listed it."
+          },
+          "name": {
+            "type": "string",
+            "description": "The skill's directory name, as the catalog listed it."
+          },
+          "plugin": {
+            "type": "string",
+            "description": "The plugin that carries it, as the catalog listed it. Two plugins\nof one marketplace may publish a skill under the same name, so the\nname alone does not say which directory to copy."
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SkillScope"
+            },
+            "description": "Which harnesses get it. Empty is a request that installs nothing and\nis refused."
+          }
+        }
+      },
       "InterruptedReason": {
         "type": "string",
         "description": "Why a session lost the machine it was running on.\n\nRecorded beside [`SessionState::Interrupted`] rather than folded into\nit, because the state says the session is off its compute and this says\nwhat the user is looking at: `Interrupted · spot reclaimed` is a status\nflyco is already recovering from, and a status with no reason would read\nas a session somebody has to rescue by hand (docs/ux.md §6).\n\nKept while flyco puts the session back — the recovery runs through\n[`SessionState::Provisioning`], and the reason is what tells that\nprovisioning apart from a first one, which is the whole of `Migrating` —\nand cleared when the session's daemon reaches the control plane again.",
@@ -12660,6 +13053,69 @@
                 "description": "Persistent-disk price actually being billed per hour."
               }
             ]
+          }
+        }
+      },
+      "MarketplaceProblem": {
+        "type": "object",
+        "description": "A marketplace flyco could not read, and why.",
+        "required": [
+          "marketplace",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string",
+            "description": "What went wrong, in a sentence the user can act on."
+          },
+          "marketplace": {
+            "type": "string",
+            "description": "The repository that could not be read."
+          }
+        }
+      },
+      "MarketplaceView": {
+        "type": "object",
+        "description": "One row of `GET /v1/marketplaces`.",
+        "required": [
+          "repo",
+          "built_in"
+        ],
+        "properties": {
+          "added_at_unix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it was added, seconds since the Unix epoch. Absent for the\nbuilt-in one, which nobody added.",
+            "minimum": 0
+          },
+          "built_in": {
+            "type": "boolean",
+            "description": "Whether flyco provides it, in which case it cannot be removed."
+          },
+          "git_ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The branch or tag read, when the user pinned one. Absent reads the\nrepository's default branch."
+          },
+          "id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Uuid",
+                "description": "Identifier, absent for the built-in marketplace."
+              }
+            ]
+          },
+          "repo": {
+            "type": "string",
+            "description": "The GitHub repository, `owner/name`."
           }
         }
       },
@@ -14287,6 +14743,38 @@
           "stdout",
           "stderr"
         ]
+      },
+      "SkillCatalog": {
+        "type": "object",
+        "description": "Response of `GET /v1/catalog/skills`.\n\nA marketplace is either read, still being read, or unreadable, and the\nthree are kept apart: a picker that showed \"no skills\" for a repository\nit had not looked at yet would be lying.",
+        "required": [
+          "skills",
+          "pending",
+          "failed"
+        ],
+        "properties": {
+          "failed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MarketplaceProblem"
+            },
+            "description": "Marketplaces that could not be read."
+          },
+          "pending": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Marketplaces still being read."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogSkill"
+            },
+            "description": "Every skill flyco can install, marketplace by marketplace."
+          }
+        }
       },
       "SkillScope": {
         "type": "string",

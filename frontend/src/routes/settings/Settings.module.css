@@ -603,6 +603,52 @@
   }
 }
 
+/* A row that is a fact rather than a choice: a marketplace, listed. It
+   answers nothing when pointed at, so it takes `.row`'s hover back — at
+   the same specificity, or the hover would win. */
+.rowStatic {
+  cursor: default;
+}
+
+.rowStatic:hover:not(:disabled) {
+  border-color: var(--color-border);
+  background: var(--color-surface-raised);
+}
+
+/* A note that is a failure rather than a status: a marketplace flyco
+   cannot read is something to fix or remove. */
+.noteProblem {
+  composes: note;
+  color: var(--color-warning);
+}
+
+/* The same control inside a `.field`, whose column stretches its children:
+   a segmented control is as wide as its segments and no wider. */
+.segmentedInline {
+  composes: segmented;
+  align-self: flex-start;
+}
+
+/* A label above a control that is not an input, so it cannot be a
+   `<label for>`. */
+.fieldLabel {
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  color: var(--color-text-muted);
+}
+
+/* An action inside a sentence: "Reading anthropics/skills… Check again". */
+.linkButton {
+  margin-left: var(--space-2);
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 /* ── Catalog rows (Tools → Add from catalog) ─────────────────────────── */
 
 .rows {

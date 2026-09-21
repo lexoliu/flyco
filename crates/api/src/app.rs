@@ -47,10 +47,10 @@ use crate::turnstile::TurnstileClient;
 use crate::vendors::Vendors;
 use crate::{
     agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens,
-    devin_oauth, env, handoffs, harness_accounts, hosts, idempotency, machines, mcp, mcp_catalog,
-    memory, oauth, observations, problem, provider_accounts, provider_oauth, provisioning, push,
-    relay, releases, repos, responses, session_repos, sessions, skills, transcripts, turns,
-    usage_limits, users, webhooks, workdirs,
+    devin_oauth, env, handoffs, harness_accounts, hosts, idempotency, machines, marketplaces, mcp,
+    mcp_catalog, memory, oauth, observations, problem, provider_accounts, provider_oauth,
+    provisioning, push, relay, releases, repos, responses, session_repos, sessions, skill_catalog,
+    skills, transcripts, turns, usage_limits, users, webhooks, workdirs,
 };
 use flyco_core::wire::EventPage;
 
@@ -3743,6 +3743,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(harness_accounts::routes());
     nodes.extend(hosts::routes());
     nodes.extend(machines::routes());
+    nodes.extend(marketplaces::routes());
     nodes.extend(mcp::routes());
     nodes.extend(mcp_catalog::routes());
     nodes.extend(memory::routes());
@@ -3750,6 +3751,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(provider_oauth::routes());
     nodes.extend(push::routes());
     nodes.extend(repos::routes());
+    nodes.extend(skill_catalog::routes());
     nodes.extend(skills::routes());
     Route::new(nodes)
         .middleware(RequireAuth::new(FlycoAuthenticator::new()))

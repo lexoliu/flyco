@@ -521,6 +521,23 @@ const SKILLS: S["SkillView"][] = [
   { id: "sk000000-0000-4000-8000-000000000002", name: "fusion-delegation", scope: "claude", size_bytes: 9_120, uploaded_at_unix: NOW - DAY },
 ];
 
+const MARKETPLACES: S["MarketplaceView"][] = [
+  { id: null, repo: "anthropics/skills", git_ref: null, built_in: true, added_at_unix: null },
+  { id: "m0000000-0000-4000-8000-000000000001", repo: "lexoliu/flyco-skills", git_ref: "main", built_in: false, added_at_unix: NOW - 2 * DAY },
+  { id: "m0000000-0000-4000-8000-000000000002", repo: "acme/missing-manifest", git_ref: null, built_in: false, added_at_unix: NOW - DAY },
+];
+
+/** A marketplace flyco has not finished reading, and one it could not read. */
+const PENDING_MARKETPLACES = new Set<string>();
+const FAILED_MARKETPLACE: S["MarketplaceProblem"] = { marketplace: "acme/missing-manifest", detail: "no .claude-plugin/marketplace.json at the repository root" };
+
+const CATALOG_SKILLS: S["CatalogSkill"][] = [
+  { marketplace: "anthropics/skills", plugin: "document-skills", name: "xlsx", description: "Read and write Excel workbooks, including formulas and formatting." },
+  { marketplace: "anthropics/skills", plugin: "document-skills", name: "pdf", description: "Fill, split and read PDF documents." },
+  { marketplace: "anthropics/skills", plugin: "artifacts-builder", name: "artifacts-builder", description: "Build a single-page artifact with the house design system." },
+  { marketplace: "lexoliu/flyco-skills", plugin: "flyco", name: "fusion-delegation", description: "Run a persistent worker agent across a sequence of related tasks." },
+];
+
 const MEMORY: S["MemoryNode"][] = [
   { id: "n0000000-0000-4000-8000-000000000001", parent: null, repo: null, title: "Toolchain", content: "bun over npm, uv over pip, ast-grep before grep.", updated_at_unix: NOW - 10 * DAY },
   { id: "n0000000-0000-4000-8000-000000000002", parent: "n0000000-0000-4000-8000-000000000001", repo: null, title: "Rust builds", content: "One builder per target dir; never two cargo commands in parallel.", updated_at_unix: NOW - 4 * DAY },
@@ -623,6 +640,19 @@ function route(method: string, path: string, url: URL, body: string): Response {
       return json({ servers: CATALOG_MCP.filter((server) => server.name.toLowerCase().includes(q)), next_cursor: null } satisfies S["McpCatalogPage"]);
     }
     if (path === "/v1/skills") return json(SKILLS);
+    if (path === "/v1/marketplaces") return json(MARKETPLACES);
+    if (path === "/v1/catalog/skills") {
+      // A marketplace added in this preview is read on the second look, the
+      // way the queue reads a real one a moment after it is added.
+      const pending = [...PENDING_MARKETPLACES];
+      const answer = json({ skills: [...CATALOG_SKILLS], pending, failed: [FAILED_MARKETPLACE] } satisfies S["SkillCatalog"]);
+      // What the queue read lands on the next look, not this one.
+      PENDING_MARKETPLACES.clear();
+      for (const repo of pending) {
+        CATALOG_SKILLS.push({ marketplace: repo, plugin: repo.split("/")[1] ?? repo, name: "example-skill", description: `What ${repo} publishes, read once the queue had it.` });
+      }
+      return answer;
+    }
     if (path === "/v1/memory") return json(MEMORY);
     if (path === "/v1/agents-md") return json(AGENTS_MD);
     if (path === "/v1/usage/llm") return json(LLM_USAGE);
@@ -702,6 +732,25 @@ function route(method: string, path: string, url: URL, body: string): Response {
     const created: S["McpServerView"] = { id: `s0000000-0000-4000-8000-${String(MCP_SERVERS.length + 1).padStart(12, "0")}`, name, enabled: true, updated_at_unix: NOW, config };
     MCP_SERVERS.push(created);
     return json(created, 201);
+  }
+  if (method === "POST" && path === "/v1/marketplaces") {
+    const input = JSON.parse(body || "{}") as S["AddMarketplace"];
+    const repo = input.repo.trim();
+    if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return problem(422, "invalid-marketplace", "a marketplace is a GitHub `owner/name`");
+    if (MARKETPLACES.some((entry) => entry.repo === repo)) return problem(409, "marketplace-already-added", `you already added ${repo}`);
+    const added: S["MarketplaceView"] = { id: `m0000000-0000-4000-8000-${String(MARKETPLACES.length + 1).padStart(12, "0")}`, repo, git_ref: input.git_ref ?? null, built_in: false, added_at_unix: NOW };
+    MARKETPLACES.push(added);
+    PENDING_MARKETPLACES.add(repo);
+    return json(added, 201);
+  }
+  if (method === "POST" && path === "/v1/catalog/skills") {
+    const input = JSON.parse(body || "{}") as S["InstallCatalogSkill"];
+    const entry = CATALOG_SKILLS.find((skill) => skill.marketplace === input.marketplace && skill.plugin === input.plugin && skill.name === input.name);
+    if (entry === undefined) return problem(404, "catalog-skill-not-found", `${input.marketplace} no longer offers ${input.name}`);
+    if (input.scopes.length === 0) return problem(422, "no-skill-scope", "a skill is installed for at least one harness");
+    const installed = input.scopes.map((scope, index): S["SkillView"] => ({ id: `sk000000-0000-4000-8000-${String(SKILLS.length + index + 1).padStart(12, "0")}`, name: entry.name, scope, size_bytes: 12_288, uploaded_at_unix: NOW }));
+    SKILLS.push(...installed);
+    return json(installed, 201);
   }
   if (method === "POST" && path === "/v1/api-keys") {
     return json({ id: "k0000000-0000-4000-8000-0000000000ff", label: "Preview key", created_at_unix: NOW, last_used_unix: null, key: "fk_preview_2Qv8xLmR4pT7nWzKcYbA9sD3fG6h" }, 201);

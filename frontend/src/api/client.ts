@@ -42,6 +42,9 @@ export type McpCatalogPage = Schemas["McpCatalogPage"];
 export type McpServerConfig = Schemas["McpServerConfig"];
 export type SkillView = Schemas["SkillView"];
 export type SkillScope = Schemas["SkillScope"];
+export type MarketplaceView = Schemas["MarketplaceView"];
+export type CatalogSkill = Schemas["CatalogSkill"];
+export type SkillCatalog = Schemas["SkillCatalog"];
 export type ProviderAccountView = Schemas["ProviderAccountView"];
 export type ProviderCredentials = Schemas["ProviderCredentials"];
 export type ProviderBonusHint = Schemas["ProviderBonusHint"];
@@ -686,6 +689,36 @@ export function uploadSkill(
 
 export function deleteSkill(id: string): Promise<void> {
   return requestVoid("DELETE", `/v1/skills/${id}`);
+}
+
+// --- /v1/marketplaces, /v1/catalog/skills -------------------------------------
+
+export function listMarketplaces(): Promise<
+  JsonResponse<"flyco_api::marketplaces::list_marketplaces", 200>
+> {
+  return requestJson("GET", "/v1/marketplaces");
+}
+
+export function addMarketplace(
+  input: JsonBody<"flyco_api::marketplaces::add_marketplace">,
+): Promise<JsonResponse<"flyco_api::marketplaces::add_marketplace", 201>> {
+  return requestJson("POST", "/v1/marketplaces", { json: input });
+}
+
+export function deleteMarketplace(id: string): Promise<void> {
+  return requestVoid("DELETE", `/v1/marketplaces/${id}`);
+}
+
+export function listCatalogSkills(): Promise<
+  JsonResponse<"flyco_api::skill_catalog::list_catalog_skills", 200>
+> {
+  return requestJson("GET", "/v1/catalog/skills");
+}
+
+export function installCatalogSkill(
+  input: JsonBody<"flyco_api::skill_catalog::install_catalog_skill">,
+): Promise<JsonResponse<"flyco_api::skill_catalog::install_catalog_skill", 201>> {
+  return requestJson("POST", "/v1/catalog/skills", { json: input });
 }
 
 // --- /v1/providers -------------------------------------------------------------

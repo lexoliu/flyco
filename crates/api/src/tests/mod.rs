@@ -33,6 +33,7 @@ mod row_budget;
 mod schema;
 mod schema_version;
 mod sessions;
+mod skill_catalog;
 mod skills;
 mod turns;
 mod turnstile;

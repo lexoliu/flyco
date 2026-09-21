@@ -47,8 +47,8 @@ use core::time::Duration;
 use askama::Template;
 use flyco_core::{
     ClientEvent, CloudProviderKind, ControlToDaemon, HarnessKind, InterruptedReason, MachineId,
-    MachineOrigin, ModelChoice, PermissionMode, ProviderAccountId, ProvisioningStage, SessionId,
-    SessionRepo, SessionState, UserId,
+    MachineOrigin, ModelChoice, PermissionMode, ProviderAccountId, ProvisioningStage, RepoSlug,
+    SessionId, SessionRepo, SessionState, UserId,
 };
 use flyco_provider::{
     CheckoutSpec, Continuation, DaemonBootstrap, GitAccess, GitIdentity, ProviderError,
@@ -197,6 +197,20 @@ pub enum ProvisioningJob {
         account: ProviderAccountId,
         /// The provider-native region this message covers.
         region: String,
+    },
+    /// Read one plugin marketplace into the skill catalog's cache.
+    ///
+    /// A marketplace is a repository: its manifest, a walk of its tree and
+    /// the `SKILL.md` of every skill it offers — two dozen GitHub calls for
+    /// the built-in one, which is why it is a message and not a request.
+    RefreshMarketplace {
+        /// Whose token reads it. A private marketplace is readable by
+        /// whoever can see the repository, and this is who asked.
+        user: UserId,
+        /// The repository, `owner/name`.
+        repo: String,
+        /// The ref the user pinned, or `None` for the default branch.
+        git_ref: Option<String>,
     },
 }
 
@@ -356,7 +370,9 @@ impl ProvisioningJob {
             Self::Provision { session, .. }
             | Self::Continue { session, .. }
             | Self::Recover { session, .. } => Some(*session),
-            Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
+            Self::RefreshCatalog { .. }
+            | Self::RefreshCatalogRegion { .. }
+            | Self::RefreshMarketplace { .. } => None,
         }
     }
 
@@ -367,7 +383,9 @@ impl ProvisioningJob {
             Self::Provision { machine, .. }
             | Self::Continue { machine, .. }
             | Self::Recover { machine, .. } => Some(*machine),
-            Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
+            Self::RefreshCatalog { .. }
+            | Self::RefreshCatalogRegion { .. }
+            | Self::RefreshMarketplace { .. } => None,
         }
     }
 
@@ -383,7 +401,9 @@ impl ProvisioningJob {
             Self::Provision { attempt, .. }
             | Self::Continue { attempt, .. }
             | Self::Recover { attempt, .. } => Some(*attempt),
-            Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. } => None,
+            Self::RefreshCatalog { .. }
+            | Self::RefreshCatalogRegion { .. }
+            | Self::RefreshMarketplace { .. } => None,
         }
     }
 
@@ -425,7 +445,9 @@ impl ProvisioningJob {
             },
             // A catalog refresh has no attempt to raise: nothing retries it
             // here, and asking for it again is the scheduled sweep's job.
-            job @ (Self::RefreshCatalog { .. } | Self::RefreshCatalogRegion { .. }) => job,
+            job @ (Self::RefreshCatalog { .. }
+            | Self::RefreshCatalogRegion { .. }
+            | Self::RefreshMarketplace { .. }) => job,
         }
     }
 }
@@ -576,6 +598,16 @@ async fn perform(
                 refresh_region(db, config, kv, clients.github, *user, *account, region).await,
             );
         }
+        ProvisioningJob::RefreshMarketplace {
+            user,
+            repo,
+            git_ref,
+        } => {
+            return settle(
+                refresh_marketplace(db, config, kv, clients.github, *user, repo, git_ref.clone())
+                    .await,
+            );
+        }
         ProvisioningJob::Provision { .. }
         | ProvisioningJob::Continue { .. }
         | ProvisioningJob::Recover { .. } => {}
@@ -631,7 +663,9 @@ async fn perform(
             Err(failure) => Err(failure),
         },
         // Answered above, before a machine job's bookkeeping was reached.
-        ProvisioningJob::RefreshCatalog { .. } | ProvisioningJob::RefreshCatalogRegion { .. } => {
+        ProvisioningJob::RefreshCatalog { .. }
+        | ProvisioningJob::RefreshCatalogRegion { .. }
+        | ProvisioningJob::RefreshMarketplace { .. } => {
             return Settled::Done;
         }
     };
@@ -673,6 +707,31 @@ fn settle(outcome: Result<(), ApiError>) -> Settled {
 /// account's document, because "read, and it refused" is an answer the
 /// request path can serve and "not read yet" is not. Only a store failure
 /// is held for redelivery.
+/// Reads one plugin marketplace into the skill catalog's cache.
+///
+/// Everything GitHub says — including a refusal — ends up in the
+/// marketplace's document, for the same reason a provider's refusal ends up
+/// in a machine catalog's: "read, and it refused" is an answer the picker
+/// can show. Only a store failure is held for redelivery.
+async fn refresh_marketplace(
+    db: &Db,
+    config: &ApiConfig,
+    kv: &Kv,
+    github: &impl GithubOauth,
+    user: UserId,
+    repo: &str,
+    git_ref: Option<String>,
+) -> Result<(), ApiError> {
+    let Ok(repo) = repo.parse::<RepoSlug>() else {
+        // A slug that no longer parses names no repository; there is
+        // nothing to read and nothing to record.
+        tracing::warn!(%repo, "dropping a marketplace refresh for an unreadable slug");
+        return Ok(());
+    };
+    let marketplace = crate::marketplaces::Marketplace { repo, git_ref };
+    crate::skill_catalog::refresh(db, config, kv, github, user, &marketplace).await
+}
+
 async fn refresh_catalog(
     db: &Db,
     config: &ApiConfig,

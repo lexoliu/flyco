@@ -118,6 +118,38 @@ pub enum ApiError {
     #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidSkill(&'static str),
 
+    /// The marketplace does not exist, or belongs to somebody else.
+    #[error("marketplace not found", status = StatusCode::NOT_FOUND)]
+    MarketplaceNotFound,
+
+    /// The caller already added this marketplace.
+    #[error("you already added {repo}", status = StatusCode::CONFLICT)]
+    MarketplaceAlreadyAdded {
+        /// The repository already listed.
+        repo: String,
+    },
+
+    /// The submitted marketplace is not one flyco can read.
+    #[error("this marketplace is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    InvalidMarketplace(&'static str),
+
+    /// The marketplace has not been read yet, so nothing can be installed
+    /// from it.
+    #[error(
+        "{repo} is still being read; try again in a moment",
+        status = StatusCode::CONFLICT
+    )]
+    SkillCatalogNotReady {
+        /// The repository being read.
+        repo: String,
+    },
+
+    /// The marketplace no longer offers the named skill.
+    #[error("the catalog no longer offers {name}", status = StatusCode::NOT_FOUND)]
+    CatalogSkillNotFound {
+        /// The skill asked for.
+        name: String,
+    },
     /// The MCP Registry could not be read.
     #[error("the MCP Registry could not be read: {0}", status = StatusCode::BAD_GATEWAY)]
     McpRegistry(crate::mcp_catalog::RegistryError),
@@ -1598,6 +1630,11 @@ impl ApiError {
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
             Self::SkillNotFound => "skill-not-found",
             Self::InvalidSkill(_) => "invalid-skill",
+            Self::MarketplaceNotFound => "marketplace-not-found",
+            Self::MarketplaceAlreadyAdded { .. } => "marketplace-already-added",
+            Self::InvalidMarketplace(_) => "invalid-marketplace",
+            Self::SkillCatalogNotReady { .. } => "skill-catalog-not-ready",
+            Self::CatalogSkillNotFound { .. } => "catalog-skill-not-found",
             Self::McpRegistry(_) => "mcp-registry-unreachable",
             Self::InvalidCatalogQuery(_) => "invalid-catalog-query",
             Self::CatalogServerNotFound { .. } => "catalog-server-not-found",

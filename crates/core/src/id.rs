@@ -138,6 +138,9 @@ pub struct ApprovalEntity(());
 /// Marker for skill identifiers.
 #[derive(Debug)]
 pub struct SkillEntity(());
+/// Marker for a plugin marketplace a user added.
+#[derive(Debug)]
+pub struct MarketplaceEntity(());
 /// Marker for memory-tree node identifiers.
 #[derive(Debug)]
 pub struct MemoryNodeEntity(());
@@ -205,6 +208,8 @@ pub type BudgetId = Id<BudgetEntity>;
 pub type ApprovalId = Id<ApprovalEntity>;
 /// Identifies an uploaded skill.
 pub type SkillId = Id<SkillEntity>;
+/// Identifies a plugin marketplace a user added.
+pub type MarketplaceId = Id<MarketplaceEntity>;
 /// Identifies a node in the tree memory.
 pub type MemoryNodeId = Id<MemoryNodeEntity>;
 /// Identifies a REST API key.

@@ -143,6 +143,35 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && path === "/v1/skills") {
     return Promise.resolve(jsonResponse([]));
   }
+  if (method === "GET" && path === "/v1/marketplaces") {
+    return Promise.resolve(
+      jsonResponse([
+        {
+          id: null,
+          repo: "anthropics/skills",
+          git_ref: null,
+          built_in: true,
+          added_at_unix: null,
+        },
+      ]),
+    );
+  }
+  if (method === "GET" && path === "/v1/catalog/skills") {
+    return Promise.resolve(
+      jsonResponse({
+        skills: [
+          {
+            marketplace: "anthropics/skills",
+            plugin: "document-skills",
+            name: "xlsx",
+            description: "Read and write Excel workbooks.",
+          },
+        ],
+        pending: [],
+        failed: [],
+      }),
+    );
+  }
   if (method === "GET" && path === "/v1/catalog/mcp-servers") {
     return Promise.resolve(
       jsonResponse({

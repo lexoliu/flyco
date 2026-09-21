@@ -20,6 +20,7 @@ import AgentsSection from "../routes/settings/AgentsSection";
 import ComputeSection from "../routes/settings/ComputeSection";
 import ToolsSection from "../routes/settings/ToolsSection";
 import McpCatalog from "../routes/settings/McpCatalog";
+import SkillCatalog from "../routes/settings/SkillCatalog";
 import InstructionsSection from "../routes/settings/InstructionsSection";
 import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
@@ -70,6 +71,7 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
         <Route path="/compute" component={ComputeSection} />
         <Route path="/tools" component={ToolsSection} />
         <Route path="/tools/mcp-catalog" component={McpCatalog} />
+        <Route path="/tools/skill-catalog" component={SkillCatalog} />
         <Route path="/instructions" component={InstructionsSection} />
         <Route path="/account" component={AccountSection} />
       </Route>
@@ -1091,6 +1093,17 @@ describe("route smoke tests", () => {
     expect(getByRole("searchbox", { name: "Search the registry" })).toBeInTheDocument();
     expect(await findByRole("button", { name: /DeepWiki/ })).toBeInTheDocument();
     // One way back, above the title, and no primary until a server is chosen.
+    expect(getByRole("link", { name: "Back to Tools" })).toHaveAttribute("href", "/settings/tools");
+  });
+
+  it("renders /settings/tools/skill-catalog with the marketplace's skills", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/tools/skill-catalog");
+    expect(await findByRole("heading", { level: 2, name: "Add a skill" })).toBeInTheDocument();
+    expect(getByRole("searchbox", { name: "Search skills" })).toBeInTheDocument();
+    expect(await findByRole("button", { name: /xlsx/ })).toBeInTheDocument();
+    // The marketplace it came from is listed, and the built-in one cannot be
+    // removed, so the row carries no Remove button.
+    expect(await findByRole("list", { name: "Marketplaces" })).toBeInTheDocument();
     expect(getByRole("link", { name: "Back to Tools" })).toHaveAttribute("href", "/settings/tools");
   });
 
