@@ -1,4 +1,7 @@
 .field {
+  /* A fitted popover panel is a flex column that squeezes its children to
+     fit: the field keeps its height and the list below it yields instead. */
+  flex: none;
   appearance: none;
   -webkit-appearance: none;
   box-sizing: border-box;
