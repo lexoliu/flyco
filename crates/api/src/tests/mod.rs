@@ -18,6 +18,7 @@ mod harness_accounts;
 mod host_room;
 mod hosts;
 mod mcp;
+mod mcp_catalog;
 mod memory;
 mod metering;
 mod provider_oauth;

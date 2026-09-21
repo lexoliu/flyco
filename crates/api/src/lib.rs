@@ -41,6 +41,7 @@ pub mod idempotency;
 pub mod jwt;
 pub mod machines;
 pub mod mcp;
+pub mod mcp_catalog;
 pub mod memory;
 pub mod metering;
 pub mod microsoft;

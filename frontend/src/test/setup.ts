@@ -143,6 +143,25 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && path === "/v1/skills") {
     return Promise.resolve(jsonResponse([]));
   }
+  if (method === "GET" && path === "/v1/catalog/mcp-servers") {
+    return Promise.resolve(
+      jsonResponse({
+        servers: [
+          {
+            name: "com.devin/deepwiki",
+            title: "DeepWiki",
+            description: "Documentation for any public GitHub repository, answered by Devin.",
+            version: "1.0.0",
+            repository_url: null,
+            website_url: "https://deepwiki.com",
+            suggested_name: "deepwiki",
+            installs: [{ kind: "remote", label: "Remote · mcp.deepwiki.com", inputs: [] }],
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+  }
   if (method === "GET" && path === "/v1/providers") {
     return Promise.resolve(jsonResponse([]));
   }

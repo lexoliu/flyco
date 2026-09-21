@@ -188,6 +188,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/catalog/mcp-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists one page of the catalog.
+         * @description Lists one page of the catalog.
+         */
+        get: operations["flyco_api::mcp_catalog::list_catalog_mcp_servers"];
+        put?: never;
+        /**
+         * Registers a catalog server with the user's answers filled in.
+         * @description Registers a catalog server with the user's answers filled in.
+         */
+        post: operations["flyco_api::mcp_catalog::install_catalog_mcp_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/cli-sessions": {
         parameters: {
             query?: never;
@@ -3223,6 +3247,72 @@ export interface components {
             region?: string | null;
             runtime?: null | components["schemas"]["Runtime"];
         };
+        /**
+         * @description A value the user supplies before a catalog server can be added: an
+         *     authorization header, an environment variable, a command-line argument.
+         */
+        CatalogInput: {
+            /** @description What the field starts out as, when the registry names a default. */
+            default?: string | null;
+            /** @description The registry's explanation of the value, when it gave one. */
+            description?: string | null;
+            /**
+             * @description What the value is filed under in
+             *     [`InstallCatalogMcpServer::values`]: `header:<name>`, `env:<NAME>`,
+             *     `arg:<name>` or `var:<variable>`.
+             */
+            key: string;
+            /** @description The name shown beside the field. */
+            label: string;
+            /** @description Whether the server cannot be added without it. */
+            required: boolean;
+            /** @description Whether the field should hide what is typed. */
+            secret: boolean;
+        };
+        /**
+         * @description How a catalog server would run once added.
+         *
+         *     The registry also lists Docker images, `NuGet` packages and `.mcpb`
+         *     bundles; none of those runs on a session machine, so an entry offering
+         *     only those is not in the catalog at all.
+         * @enum {string}
+         */
+        CatalogInstallKind: "remote" | "npm" | "pypi";
+        /** @description One way of running a catalog server, and what it needs from the user. */
+        CatalogMcpInstall: {
+            /** @description What the user fills in first. Empty when one click is enough. */
+            inputs: components["schemas"]["CatalogInput"][];
+            /** @description How it runs. */
+            kind: components["schemas"]["CatalogInstallKind"];
+            /**
+             * @description A line naming the endpoint or the package: `Remote · mcp.example`,
+             *     `npx @acme/mcp`.
+             */
+            label: string;
+        };
+        /** @description One server of `GET /v1/catalog/mcp-servers`. */
+        CatalogMcpServer: {
+            /** @description The publisher's one-line description. */
+            description: string;
+            /** @description Every way flyco can run it, most preferred first. */
+            installs: components["schemas"]["CatalogMcpInstall"][];
+            /** @description The registry's reverse-DNS name, `io.github.owner/server`. */
+            name: string;
+            /** @description Where the source lives, when the publisher said. */
+            repository_url?: string | null;
+            /**
+             * @description The name the server is registered under unless the user picks
+             *     another: the tail of the registry name, in the characters a harness
+             *     can announce a server as.
+             */
+            suggested_name: string;
+            /** @description The display name, when the publisher gave one. */
+            title?: string | null;
+            /** @description The version the registry lists as latest. */
+            version: string;
+            /** @description The publisher's site, when they named one. */
+            website_url?: string | null;
+        };
         /** @description Query of the two `Files` routes. */
         CheckoutPath: {
             /**
@@ -4751,6 +4841,22 @@ export interface components {
             /** @description Where it is in its life. */
             state: components["schemas"]["HostState"];
         };
+        /** @description Request body of `POST /v1/catalog/mcp-servers`. */
+        InstallCatalogMcpServer: {
+            /** @description Which of its installs to register. */
+            kind: components["schemas"]["CatalogInstallKind"];
+            /**
+             * @description The name to register it under. Omitted uses the catalog's
+             *     suggestion.
+             */
+            name?: string | null;
+            /** @description The registry name of the server, as the catalog listed it. */
+            server: string;
+            /** @description The inputs the install asked for, by key. */
+            values?: {
+                [key: string]: string;
+            };
+        };
         /**
          * @description Why a session lost the machine it was running on.
          *
@@ -5161,6 +5267,23 @@ export interface components {
             /** @description Where it is in its lifecycle. */
             state: components["schemas"]["MachineState"];
             storage_hourly?: null | components["schemas"]["Usd"];
+        };
+        /** @description One page of `GET /v1/catalog/mcp-servers`. */
+        McpCatalogPage: {
+            /** @description Cursor for the next page, absent on the last. */
+            next_cursor?: string | null;
+            /** @description The servers on this page that flyco can run. */
+            servers: components["schemas"]["CatalogMcpServer"][];
+        };
+        /** @description What the picker asks for. */
+        McpCatalogQuery: {
+            /** @description Cursor from a previous page's `next_cursor`. */
+            cursor?: string | null;
+            /**
+             * @description Substring matched against the registry name. Omitted lists the
+             *     registry from its first page.
+             */
+            search?: string | null;
         };
         /**
          * @description How a session reaches one MCP server.
@@ -7067,6 +7190,87 @@ export interface operations {
                          *     the single-use `state` this control plane will accept back.
                          */
                         authorize_url: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::mcp_catalog::list_catalog_mcp_servers": {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Cursor for the next page, absent on the last. */
+                        next_cursor?: string | null;
+                        /** @description The servers on this page that flyco can run. */
+                        servers: components["schemas"]["CatalogMcpServer"][];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::mcp_catalog::install_catalog_mcp_server": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Which of its installs to register. */
+                    kind: components["schemas"]["CatalogInstallKind"];
+                    /**
+                     * @description The name to register it under. Omitted uses the catalog's
+                     *     suggestion.
+                     */
+                    name?: string | null;
+                    /** @description The registry name of the server, as the catalog listed it. */
+                    server: string;
+                    /** @description The inputs the install asked for, by key. */
+                    values?: {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description How to reach it. */
+                        config: components["schemas"]["McpServerConfig"];
+                        /** @description Whether sessions are given it. */
+                        enabled: boolean;
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Name the harness announces it under. */
+                        name: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
                     };
                 };
             };

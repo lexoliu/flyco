@@ -1,4 +1,5 @@
 import { render } from "@solidjs/testing-library";
+import { MemoryRouter, Route, createMemoryHistory } from "@solidjs/router";
 import { describe, expect, it, vi } from "vitest";
 import ToolsSection from "./ToolsSection";
 
@@ -17,7 +18,14 @@ vi.mock("../../api/client", async () => {
 
 describe("ToolsSection", () => {
   it("keeps both blocks on screen and says why when their lists fail to load", async () => {
-    const { findByText, getByRole, getByText } = render(() => <ToolsSection />);
+    // Inside a router: the section links to the catalog picker.
+    const history = createMemoryHistory();
+    history.set({ value: "/settings/tools", replace: true, scroll: false });
+    const { findByText, getByRole, getByText } = render(() => (
+      <MemoryRouter history={history}>
+        <Route path="/settings/tools" component={ToolsSection} />
+      </MemoryRouter>
+    ));
 
     // A rejected resource must not unmount the block: the reason is shown
     // and the way to add something is still there.

@@ -432,6 +432,79 @@ const MCP_SERVERS: S["McpServerView"][] = [
   { id: "s0000000-0000-4000-8000-000000000002", name: "acpsub", enabled: false, updated_at_unix: NOW - 2 * DAY, config: { transport: "stdio", command: "acpsub", args: ["serve"], env: [] } },
 ];
 
+/** Registry entries as the control plane translates them, one of each shape. */
+const CATALOG_MCP: S["CatalogMcpServer"][] = [
+  {
+    name: "com.devin/deepwiki",
+    title: "DeepWiki",
+    description: "Ask questions about any public GitHub repository and read its generated documentation.",
+    version: "1.0.0",
+    repository_url: "https://github.com/cognition-ai/deepwiki",
+    website_url: "https://deepwiki.com",
+    suggested_name: "deepwiki",
+    installs: [{ kind: "remote", label: "Remote · mcp.deepwiki.com", inputs: [] }],
+  },
+  {
+    name: "ai.smithery/Hint-Services-obsidian-github-mcp",
+    title: null,
+    description: "Connect AI assistants to your GitHub-hosted Obsidian vault to seamlessly access, search, and analyze your knowledge base.",
+    version: "0.4.0",
+    repository_url: "https://github.com/Hint-Services/obsidian-github-mcp",
+    website_url: null,
+    suggested_name: "Hint-Services-obsidian-github-mcp",
+    installs: [
+      {
+        kind: "remote",
+        label: "Remote · server.smithery.ai",
+        inputs: [
+          { key: "var:smithery_api_key", label: "smithery_api_key", description: "Bearer token for Smithery authentication", required: true, secret: true, default: null },
+        ],
+      },
+    ],
+  },
+  {
+    name: "io.github.bytedance/mcp-server-filesystem",
+    title: "Filesystem",
+    description: "Read, write and search files under the directories you allow.",
+    version: "latest",
+    repository_url: "https://github.com/bytedance/UI-TARS-desktop",
+    website_url: null,
+    suggested_name: "mcp-server-filesystem",
+    installs: [
+      {
+        kind: "npm",
+        label: "npx @agent-infra/mcp-server-filesystem",
+        inputs: [
+          { key: "arg:allowed-directories", label: "allowed-directories", description: "Comma-separated list of allowed directories for file operations", required: true, secret: false, default: null },
+        ],
+      },
+    ],
+  },
+  {
+    name: "io.github.0nork/0nMCP",
+    title: "0nMCP",
+    description: "One MCP server that fronts 700+ integrations, hosted or run locally.",
+    version: "2.4.1",
+    repository_url: "https://github.com/0nork/0nMCP",
+    website_url: "https://0n.network",
+    suggested_name: "0nMCP",
+    installs: [
+      { kind: "remote", label: "Remote · mcp.0n.network", inputs: [] },
+      { kind: "npm", label: "npx 0nmcp", inputs: [] },
+    ],
+  },
+  {
+    name: "io.github.upstash/context7",
+    title: "Context7",
+    description: "Up-to-date documentation for any library, straight into the context window.",
+    version: "1.0.14",
+    repository_url: "https://github.com/upstash/context7",
+    website_url: "https://context7.com",
+    suggested_name: "context7",
+    installs: [{ kind: "remote", label: "Remote · mcp.context7.com", inputs: [] }],
+  },
+];
+
 const SKILLS: S["SkillView"][] = [
   { id: "sk000000-0000-4000-8000-000000000001", name: "flyco", scope: "claude", size_bytes: 18_432, uploaded_at_unix: NOW - 6 * DAY },
   { id: "sk000000-0000-4000-8000-000000000002", name: "fusion-delegation", scope: "claude", size_bytes: 9_120, uploaded_at_unix: NOW - DAY },
@@ -534,6 +607,10 @@ function route(method: string, path: string, url: URL, body: string): Response {
     }
     if (path === "/v1/api-keys") return json(API_KEYS);
     if (path === "/v1/mcp-servers") return json(MCP_SERVERS);
+    if (path === "/v1/catalog/mcp-servers") {
+      const q = (url.searchParams.get("search") ?? "").toLowerCase();
+      return json({ servers: CATALOG_MCP.filter((server) => server.name.toLowerCase().includes(q)), next_cursor: null } satisfies S["McpCatalogPage"]);
+    }
     if (path === "/v1/skills") return json(SKILLS);
     if (path === "/v1/memory") return json(MEMORY);
     if (path === "/v1/agents-md") return json(AGENTS_MD);
@@ -598,6 +675,22 @@ function route(method: string, path: string, url: URL, body: string): Response {
       token: "fh_preview_7Kd2mQx9vRt4nWpLzYb3cA8eF1gH",
     };
     return json(token, 201);
+  }
+  if (method === "POST" && path === "/v1/catalog/mcp-servers") {
+    const input = JSON.parse(body || "{}") as S["InstallCatalogMcpServer"];
+    const entry = CATALOG_MCP.find((server) => server.name === input.server);
+    const install = entry?.installs.find((candidate) => candidate.kind === input.kind);
+    if (entry === undefined || install === undefined) return problem(404, "catalog-server-not-found", `the catalog no longer lists ${input.server}`);
+    const missing = install.inputs.find((field) => field.required && !(input.values?.[field.key] ?? field.default));
+    if (missing !== undefined) return problem(422, "catalog-input-missing", `the catalog entry needs a value for ${missing.key}`);
+    const name = input.name ?? entry.suggested_name;
+    if (MCP_SERVERS.some((server) => server.name === name)) return problem(409, "mcp-server-name-taken", `you already registered an MCP server called ${name}`);
+    const config: S["McpServerConfig"] = install.kind === "remote"
+      ? { transport: "http", url: `https://${install.label.replace("Remote · ", "")}/mcp`, headers: install.inputs.map((field) => ({ name: "Authorization", value: `Bearer ${input.values?.[field.key] ?? ""}` })) }
+      : { transport: "stdio", command: install.kind === "npm" ? "npx" : "uvx", args: install.label.split(" ").slice(1), env: [] };
+    const created: S["McpServerView"] = { id: `s0000000-0000-4000-8000-${String(MCP_SERVERS.length + 1).padStart(12, "0")}`, name, enabled: true, updated_at_unix: NOW, config };
+    MCP_SERVERS.push(created);
+    return json(created, 201);
   }
   if (method === "POST" && path === "/v1/api-keys") {
     return json({ id: "k0000000-0000-4000-8000-0000000000ff", label: "Preview key", created_at_unix: NOW, last_used_unix: null, key: "fk_preview_2Qv8xLmR4pT7nWzKcYbA9sD3fG6h" }, 201);

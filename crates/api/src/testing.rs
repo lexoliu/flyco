@@ -567,6 +567,72 @@ pub const CLAUDE_TOKEN_LIFETIME: u64 = 8 * 60 * 60;
 /// The address [`TestClaude`] reports, which becomes the account's label.
 pub const CLAUDE_ACCOUNT_EMAIL: &str = "me@lexo.cool";
 
+/// A [`crate::mcp_catalog::McpRegistry`] that answers from captured pages.
+///
+/// Two real pages, captured from the registry on 2026-09-20: the first page
+/// of a search for `github`, and the one entry of a search for `filesystem`
+/// that carries an npm package with a named argument. Any other query is an
+/// empty page. The counter says how often the registry itself was asked,
+/// which is what the store in front of it is there to keep small.
+#[derive(Debug, Clone)]
+pub struct TestRegistry {
+    pages: std::sync::Arc<Vec<(Option<String>, crate::mcp_catalog::RegistryPage)>>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl TestRegistry {
+    /// The two captured pages.
+    #[must_use]
+    pub fn fixtures() -> Self {
+        let github: crate::mcp_catalog::RegistryPage =
+            serde_json::from_str(include_str!("../fixtures/mcp-registry/search-github.json"))
+                .expect("the fixture is a registry page");
+        let filesystem: crate::mcp_catalog::RegistryPage = serde_json::from_str(include_str!(
+            "../fixtures/mcp-registry/search-filesystem.json"
+        ))
+        .expect("the fixture is a registry page");
+        Self {
+            pages: std::sync::Arc::new(vec![
+                (Some("github".to_owned()), github),
+                (Some("filesystem".to_owned()), filesystem),
+            ]),
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// How many pages the registry was asked for so far.
+    #[must_use]
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl crate::mcp_catalog::McpRegistry for TestRegistry {
+    fn page(
+        &self,
+        search: Option<&str>,
+        _cursor: Option<&str>,
+    ) -> impl Future<
+        Output = Result<crate::mcp_catalog::RegistryPage, crate::mcp_catalog::RegistryError>,
+    > + Send {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // A search for an exact registry name answers the page that holds
+        // it, the way the registry's substring match does.
+        let page = self
+            .pages
+            .iter()
+            .find(|(query, page)| {
+                query.as_deref() == search
+                    || search.is_some_and(|wanted| {
+                        page.servers.iter().any(|entry| entry.server.name == wanted)
+                    })
+            })
+            .map(|(_, page)| page.clone())
+            .unwrap_or_default();
+        core::future::ready(Ok(page))
+    }
+}
+
 /// A [`crate::turnstile::SiteVerify`] that answers without a network.
 ///
 /// [`TestGithub`] stands in for `github.com`; this stands in for
@@ -1372,9 +1438,27 @@ pub fn test_router_full(
         test_config(),
         GithubClient::Fake(github),
         crate::turnstile::TurnstileClient::Fake(turnstile),
+        crate::mcp_catalog::RegistryClient::Fake(TestRegistry::fixtures()),
         vendors,
         test_clouds(),
         crate::codespaces::Codespaces::Fake(codespaces),
+        crate::request_budget::Limits::PRODUCTION,
+        db,
+        queue,
+    )
+}
+
+/// The same router, against a registry the caller holds, so a test can
+/// count how often it was asked.
+pub fn test_router_with_registry(db: Db, queue: Queue, registry: TestRegistry) -> Router {
+    router(
+        test_config(),
+        GithubClient::Fake(TestGithub::default()),
+        crate::turnstile::TurnstileClient::Fake(TestTurnstile::passing()),
+        crate::mcp_catalog::RegistryClient::Fake(registry),
+        test_vendors(),
+        test_clouds(),
+        crate::codespaces::Codespaces::Fake(TestCodespaces::succeeding()),
         crate::request_budget::Limits::PRODUCTION,
         db,
         queue,
@@ -1387,6 +1471,7 @@ pub fn test_router_budgeted(db: Db, queue: Queue, limits: crate::request_budget:
         test_config(),
         GithubClient::Fake(TestGithub::default()),
         crate::turnstile::TurnstileClient::Fake(TestTurnstile::passing()),
+        crate::mcp_catalog::RegistryClient::Fake(TestRegistry::fixtures()),
         test_vendors(),
         test_clouds(),
         crate::codespaces::Codespaces::Fake(TestCodespaces::succeeding()),
