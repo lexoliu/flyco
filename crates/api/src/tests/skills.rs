@@ -6,12 +6,13 @@
 //! than accumulating a second one, that a delete takes the object with the
 //! row, and that one user's skills are unreachable from another's.
 
-use flyco_core::{CurrentUser, Problem, SkillScope, SkillView};
+use flyco_core::{CurrentUser, Problem, SkillMount, SkillScope, SkillView};
 use skyzen_services::{Db, Kv, Storage};
 use skyzen_test::TestContext;
 
+use crate::daemon_tokens;
 use crate::session;
-use crate::testing::{migrated_router, seed_other_user, seed_user};
+use crate::testing::{migrated_router, seed_other_user, seed_session, seed_user};
 
 /// The smallest byte string that starts like a zip archive.
 const BUNDLE: &[u8] = b"PK\x03\x04a skill bundle";
@@ -265,4 +266,136 @@ async fn a_name_no_directory_could_hold_is_refused(
         .send()
         .await;
     response.assert_status(422);
+}
+
+#[skyzen::test]
+async fn a_sessions_daemon_sees_exactly_its_owners_skills(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    storage: Storage,
+) {
+    let router = migrated_router(&db).await;
+    let user = seed_user(&db).await;
+    let owner_token = sign_in(&kv, user.clone()).await;
+    let stranger_token = sign_in(&kv, seed_other_user(&db).await).await;
+    let session = seed_session(&db, &user).await;
+    let daemon = daemon_tokens::issue(&db, user.id, session)
+        .await
+        .expect("mint a daemon token")
+        .token;
+    let client = ctx.client(router);
+
+    // Two of the owner's, one of them a Codex bundle, and one of somebody
+    // else's: the mount list carries the owner's whole registry because the
+    // daemon, not the control plane, knows which harness it will run.
+    for (name, scope) in [("release-notes", "claude"), ("triage", "codex")] {
+        client
+            .post(&upload_path(name, scope))
+            .bearer(&owner_token)
+            .body(BUNDLE)
+            .send()
+            .await
+            .assert_status(201);
+    }
+    client
+        .post(&upload_path("not-yours", "claude"))
+        .bearer(&stranger_token)
+        .body(BUNDLE)
+        .send()
+        .await
+        .assert_status(201);
+
+    let mounts: Vec<SkillMount> = client
+        .get(&format!("/v1/sessions/{session}/skills"))
+        .bearer(&daemon)
+        .send()
+        .await
+        .json();
+
+    let mut names: Vec<&str> = mounts.iter().map(|mount| mount.name.as_str()).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["release-notes", "triage"]);
+    assert_eq!(
+        mounts.iter().map(|mount| mount.scope).collect::<Vec<_>>(),
+        [SkillScope::Claude, SkillScope::Codex],
+        "ordered by name"
+    );
+    assert!(
+        mounts
+            .iter()
+            .all(|mount| mount.size_bytes == BUNDLE.len() as u64)
+    );
+
+    // The bundle route streams back the bytes that were uploaded.
+    let release_notes = mounts
+        .iter()
+        .find(|mount| mount.name == "release-notes")
+        .expect("the skill is mounted");
+    let bundle = client
+        .get(&format!(
+            "/v1/sessions/{session}/skills/{}/bundle",
+            release_notes.id
+        ))
+        .bearer(&daemon)
+        .send()
+        .await;
+    bundle.assert_status(200);
+    assert_eq!(bundle.body_bytes(), BUNDLE);
+
+    // And it is stored under the id the mount list handed out.
+    assert!(
+        storage
+            .get(&format!("skills/{}.zip", release_notes.id))
+            .await
+            .expect("read the bundle")
+            .is_some()
+    );
+}
+
+#[skyzen::test]
+async fn a_daemon_cannot_read_another_users_bundle(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    _storage: Storage,
+) {
+    let router = migrated_router(&db).await;
+    let owner = seed_other_user(&db).await;
+    let owner_token = sign_in(&kv, owner.clone()).await;
+    let caller = seed_user(&db).await;
+    let session = seed_session(&db, &caller).await;
+    let daemon = daemon_tokens::issue(&db, caller.id, session)
+        .await
+        .expect("mint a daemon token")
+        .token;
+    let client = ctx.client(router);
+
+    let theirs: SkillView = client
+        .post(&upload_path("private", "claude"))
+        .bearer(&owner_token)
+        .body(BUNDLE)
+        .send()
+        .await
+        .json();
+
+    let refused = client
+        .get(&format!(
+            "/v1/sessions/{session}/skills/{}/bundle",
+            theirs.id
+        ))
+        .bearer(&daemon)
+        .send()
+        .await;
+    refused.assert_status(404);
+    assert!(refused.json::<Problem>().kind.ends_with("skill-not-found"));
+
+    // The session's own list does not leak it either.
+    let mounts: Vec<SkillMount> = client
+        .get(&format!("/v1/sessions/{session}/skills"))
+        .bearer(&daemon)
+        .send()
+        .await
+        .json();
+    assert_eq!(mounts, Vec::new());
 }

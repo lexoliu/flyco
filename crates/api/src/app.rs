@@ -12,9 +12,9 @@ use flyco_core::{
     MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RegionLocation, RepoAddedBy,
     RepoSelection, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
     ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
-    SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary,
-    TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit,
-    UserId,
+    SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary, SkillId,
+    SkillMount, TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession,
+    UsageLimitHit, UserId,
     wire::{ApprovalPayload, DaemonAttach, DaemonAttached, DaemonFrames},
 };
 use flyco_provider::host::{HostAttach, HostFrames};
@@ -3544,6 +3544,61 @@ async fn read_agent_budget(session: SessionId, db: &Db) -> Result<BudgetView, Ap
     Ok(sessions::find(db, user, session).await?.budget)
 }
 
+/// Lists the skills this session's machine installs before the harness
+/// starts — the session owner's whole registry, scoped by
+/// `sessions::owner` because the `fd_` token names a session and never a
+/// user.
+///
+/// Costs two D1 reads per call: the session's owner, then the owner's
+/// skills rows — a list bounded by how many skills one account holds.
+#[skyzen::openapi]
+async fn get_session_skills(
+    State(session): State<DaemonSession>,
+    db: Db,
+) -> Outcome<Json<Vec<SkillMount>>> {
+    read_session_skills(session.0, &db).await.map(Json).into()
+}
+
+async fn read_session_skills(session: SessionId, db: &Db) -> Result<Vec<SkillMount>, ApiError> {
+    let user = sessions::owner(db, session).await?;
+    skills::mounts(db, user).await
+}
+
+/// Streams one skill bundle to this session's daemon, which unpacks it
+/// into the harness's global skills directory.
+///
+/// Costs two D1 reads — the session's owner and the skill row, owner-scoped
+/// so another user's id is a 404 — plus one R2 read whose size is the
+/// stored bundle (at most [`skills::MAX_BUNDLE_BYTES`]).
+#[skyzen::openapi]
+async fn get_session_skill_bundle(
+    State(session): State<DaemonSession>,
+    params: Params,
+    storage: Storage,
+    db: Db,
+) -> Outcome<Response> {
+    read_session_skill_bundle(session.0, &params, &db, &storage)
+        .await
+        .into()
+}
+
+async fn read_session_skill_bundle(
+    session: SessionId,
+    params: &Params,
+    db: &Db,
+    storage: &Storage,
+) -> Result<Response, ApiError> {
+    let user = sessions::owner(db, session).await?;
+    let id: SkillId = path_id(params, "skill")?;
+    let body = skills::bundle(db, storage, user, id).await?;
+    let mut response = Response::new(skyzen::Body::from(body));
+    response.headers_mut().insert(
+        skyzen::header::CONTENT_TYPE,
+        skyzen::header::HeaderValue::from_static("application/zip"),
+    );
+    Ok(response)
+}
+
 /// Routes that anyone may call.
 ///
 /// Three of them are public because they cannot be anything else: a browser
@@ -3633,6 +3688,8 @@ fn daemon_routes() -> Vec<RouteNode> {
             .put(put_workdir_patch),
         "/v1/sessions/{id}/handoff".at(get_handoff),
         "/v1/sessions/{id}/handoff/transcript".at(get_handoff_transcript),
+        "/v1/sessions/{id}/skills".at(get_session_skills),
+        "/v1/sessions/{id}/skills/{skill}/bundle".at(get_session_skill_bundle),
     ))
     .middleware(RequireDaemon::new())
     .into_route_nodes();

@@ -7361,6 +7361,95 @@
         }
       }
     },
+    "/v1/sessions/{id}/skills": {
+      "get": {
+        "summary": "Lists the skills this session's machine installs before the harness starts — the session owner's whole registry, scoped by `sessions::owner` because the `fd_` token names a session and never a user.",
+        "description": "Lists the skills this session's machine installs before the harness\nstarts — the session owner's whole registry, scoped by\n`sessions::owner` because the `fd_` token names a session and never a\nuser.\n\nCosts two D1 reads per call: the session's owner, then the owner's\nskills rows — a list bounded by how many skills one account holds.",
+        "operationId": "flyco_api::app::get_session_skills",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "description": "One row of `GET /v1/sessions/{id}/skills`: the list a session's daemon\ninstalls into the harness's global skills directory.\n\nA slimmer projection than [`SkillView`] — the daemon needs the id to\nask for the bundle, the name to pick the directory it lands in, and the\nscope to filter to its own harness. `uploaded_at_unix` is the registry's\nbookkeeping, not the machine's.",
+                    "required": [
+                      "id",
+                      "name",
+                      "scope",
+                      "size_bytes"
+                    ],
+                    "properties": {
+                      "id": {
+                        "$ref": "#/components/schemas/Uuid",
+                        "description": "Identifier, which the daemon hands back to fetch the bundle."
+                      },
+                      "name": {
+                        "type": "string",
+                        "description": "Directory name the bundle is installed under."
+                      },
+                      "scope": {
+                        "$ref": "#/components/schemas/SkillScope",
+                        "description": "Which harness gets it."
+                      },
+                      "size_bytes": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "Size of the stored zip in bytes.",
+                        "minimum": 0
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/skills/{skill}/bundle": {
+      "get": {
+        "summary": "Streams one skill bundle to this session's daemon, which unpacks it into the harness's global skills directory.",
+        "description": "Streams one skill bundle to this session's daemon, which unpacks it\ninto the harness's global skills directory.\n\nCosts two D1 reads — the session's owner and the skill row, owner-scoped\nso another user's id is a 404 — plus one R2 read whose size is the\nstored bundle (at most [`skills::MAX_BUNDLE_BYTES`]).",
+        "operationId": "flyco_api::app::get_session_skill_bundle",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "skill",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response"
+          }
+        }
+      }
+    },
     "/v1/sessions/{id}/spot-notice": {
       "post": {
         "summary": "flyco_api::app::report_spot_notice",

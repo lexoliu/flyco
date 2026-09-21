@@ -40,6 +40,25 @@ pub struct SkillView {
     pub uploaded_at_unix: u64,
 }
 
+/// One row of `GET /v1/sessions/{id}/skills`: the list a session's daemon
+/// installs into the harness's global skills directory.
+///
+/// A slimmer projection than [`SkillView`] — the daemon needs the id to
+/// ask for the bundle, the name to pick the directory it lands in, and the
+/// scope to filter to its own harness. `uploaded_at_unix` is the registry's
+/// bookkeeping, not the machine's.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct SkillMount {
+    /// Identifier, which the daemon hands back to fetch the bundle.
+    pub id: SkillId,
+    /// Directory name the bundle is installed under.
+    pub name: String,
+    /// Which harness gets it.
+    pub scope: SkillScope,
+    /// Size of the stored zip in bytes.
+    pub size_bytes: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::SkillScope;

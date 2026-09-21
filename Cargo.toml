@@ -125,6 +125,10 @@ tokio = { version = "1", features = [
     "time",
 ] }
 toml = "0.9"
+# Skill bundles are zips the daemon unpacks on the session machine.
+# Everything but stored/deflate is off: a bundle that asks for another
+# compression method fails rather than pulling in codecs nothing uploads.
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Auth stack: pure-Rust crypto and encodings, all verified on wasm32.

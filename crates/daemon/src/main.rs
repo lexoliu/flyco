@@ -17,6 +17,7 @@ use flyco_daemon::host;
 use flyco_daemon::mcp::FlycoTools;
 use flyco_daemon::mount::{FlycoServer, Mount};
 use flyco_daemon::repl;
+use flyco_daemon::skills;
 use rmcp::ServiceExt as _;
 use rmcp::transport::stdio;
 use tokio::io::AsyncWriteExt as _;
@@ -126,6 +127,8 @@ enum Failure {
     Codespace(#[from] flyco_daemon::codespace::CodespaceError),
     #[error(transparent)]
     Mount(#[from] flyco_daemon::mount::MountError),
+    #[error(transparent)]
+    Skills(#[from] skills::SkillError),
     /// Boxed: `HostError` is wide enough that carrying it inline would make
     /// every `Result` in this binary a hundred-plus bytes.
     #[error(transparent)]
@@ -170,6 +173,7 @@ impl Failure {
         match self {
             Self::Wire(wire) => wire.retry_after(),
             Self::Host(host) => host.retry_after(),
+            Self::Skills(skills) => skills.retry_after(),
             _ => None,
         }
     }
@@ -268,6 +272,13 @@ async fn run(cli: Cli) -> Result<(), Failure> {
                 Box::pin(check_out(&config, api.as_ref())).await,
             )
             .await?;
+            // The owner's skills land before the harness is built: a
+            // harness reads its global skills directory once, at launch,
+            // and a running one must never watch it change mid-turn. A
+            // developer machine has no control plane and installs nothing.
+            if let Some(api) = api.as_ref() {
+                report_failure_to(Some(api), install_skills(&config, api).await).await?;
+            }
             // Every server this session may reach: flyco's own, launched as
             // a second `flycod mcp` against this same file, and the ones
             // the user registered. Built once here because both harnesses
@@ -308,6 +319,23 @@ async fn report_failure_to<T>(
         tracing::warn!(%error, "could not tell the control plane why flycod is stopping");
     }
     Err(failure)
+}
+
+/// Installs the session owner's skills into the harness's global skills
+/// directory.
+///
+/// Called only with a control plane — the developer-machine REPL has no
+/// registry to ask and installs nothing — and only for a harness that has
+/// such a directory, which [`skills::target`] decides: Claude's config
+/// tree gets the `Claude` scope, Codex's `CODEX_HOME` gets the `Codex`
+/// one, and any other ACP agent gets nothing.
+async fn install_skills(config: &DaemonConfig, api: &HttpControlApi) -> Result<(), Failure> {
+    let Some(target) = skills::target(config) else {
+        return Ok(());
+    };
+    let mounts = api.list_skills().await.map_err(skills::SkillError::from)?;
+    skills::install(api, &mounts, &target).await?;
+    Ok(())
 }
 
 /// Which harness conversation this daemon must continue.

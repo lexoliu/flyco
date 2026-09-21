@@ -107,7 +107,7 @@ pub use session::{
     USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause,
     excerpt,
 };
-pub use skills::{SkillScope, SkillView};
+pub use skills::{SkillMount, SkillScope, SkillView};
 pub use usage::{
     CloudSpend, CloudUsageView, HarnessObservation, LlmUsageView, OBSERVATION_WINDOW_SECONDS,
     RateLimitObservation,

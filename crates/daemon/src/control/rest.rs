@@ -39,7 +39,7 @@ use flyco_core::{
     AgentMachineView, ApprovalId, ApprovalView, BudgetView, HandoffView, HarnessObservation,
     HarnessSessionView, MachineCatalogEntry, ModelOption, Problem, ProvisioningStage,
     ReportProvisioningStage, ReportSpotNotice, ReportStartupFailure, ReportStopping, ResizeMachine,
-    SessionId, StopReason, UsageWindow,
+    SessionId, SkillId, SkillMount, StopReason, UsageWindow,
 };
 use url::Url;
 use zenwave::{Client as _, ResponseExt as _};
@@ -305,6 +305,24 @@ pub trait ControlApi: ApprovalRaiser {
     fn get_handoff_transcript(
         &self,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send;
+
+    /// Reads the skills this session's machine installs.
+    ///
+    /// The owner's whole registry: the daemon asks once at start, filters
+    /// to the scope of the harness it is about to run, and fetches each
+    /// bundle through [`skill_bundle`](Self::skill_bundle).
+    fn list_skills(&self) -> impl Future<Output = Result<Vec<SkillMount>, ControlApiError>> + Send;
+
+    /// Downloads one mounted skill's bundle — the uploaded zip, verbatim.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlApiError`] if the control plane could not be
+    /// reached or refused the download.
+    fn skill_bundle(
+        &self,
+        skill: SkillId,
+    ) -> impl Future<Output = Result<Vec<u8>, ControlApiError>> + Send;
 
     /// Reads the conversation a daemon starting on this session must
     /// continue, and the model it must continue it on.
@@ -899,6 +917,22 @@ impl ControlApi for HttpControlApi {
         };
         let body = response.into_bytes().await.map_err(transport)?;
         Ok(Some(body.to_vec()))
+    }
+
+    async fn list_skills(&self) -> Result<Vec<SkillMount>, ControlApiError> {
+        self.get_json("skills").await
+    }
+
+    async fn skill_bundle(&self, skill: SkillId) -> Result<Vec<u8>, ControlApiError> {
+        let url = self.url(&format!("skills/{skill}/bundle"))?;
+        let mut client = zenwave::client();
+        let response = client
+            .get(&url)
+            .map_err(transport)?
+            .bearer_auth(self.token.clone())
+            .await
+            .map_err(|error| refused("GET", &url, &error))?;
+        Ok(response.into_bytes().await.map_err(transport)?.to_vec())
     }
 
     async fn get_transcript(&self, stream: &str) -> Result<TranscriptRead, ControlApiError> {
