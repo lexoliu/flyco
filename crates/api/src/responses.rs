@@ -48,11 +48,12 @@ const COLLECTION_PLACEHOLDER: &str = "Vec";
 ///   `app::open_event_stream` answer `200` with a `text/event-stream` body
 ///   that never ends — a stream the response model has no way to describe.
 /// * `app::get_release_artifact`, `app::put_transcript_batch`,
-///   `app::get_transcript`, the workdir patch pair, and the handoff
-///   payload routes carry raw bytes: a release is an executable or
-///   checksum, a transcript batch is newline-delimited JSON, a workdir
-///   snapshot is a `git` binary diff, and a handoff transcript is
-///   whichever harness-native format the source session wrote — not a
+///   `app::get_transcript`, `app::get_session_skill_bundle`, the workdir
+///   patch pair, and the handoff payload routes carry raw bytes: a
+///   release is an executable or checksum, a transcript batch is
+///   newline-delimited JSON, a skill bundle is the zip a machine unpacks,
+///   a workdir snapshot is a `git` binary diff, and a handoff transcript
+///   is whichever harness-native format the source session wrote — not a
 ///   document.
 /// * `repos::list_repos` is generic over the GitHub client, and
 ///   `#[skyzen::openapi]` cannot annotate a generic handler — the macro
@@ -70,6 +71,7 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::app::desktop_stream",
     "flyco_api::app::desktop_takeover",
     "flyco_api::app::get_handoff_transcript",
+    "flyco_api::app::get_session_skill_bundle",
     "flyco_api::app::get_workdir_patch",
     "flyco_api::app::interrupt_session",
     "flyco_api::app::notify_turn_completed",
