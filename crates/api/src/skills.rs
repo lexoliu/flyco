@@ -98,7 +98,7 @@ fn bundle_key(id: SkillId) -> String {
 /// The name becomes a directory inside the harness's global skills
 /// directory, so anything outside this set is either unaddressable or an
 /// escape from the prefix it is meant to live in.
-fn checked_name(name: &str) -> Result<String, ApiError> {
+pub(crate) fn checked_name(name: &str) -> Result<String, ApiError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(ApiError::InvalidSkill("a name is required"));
@@ -161,7 +161,7 @@ async fn upload_skill(
     db: Db,
     body: Bytes,
 ) -> Outcome<Created<Json<SkillView>>> {
-    store(&db, &storage, user.id, upload, &body)
+    store(&db, &storage, user.id, &upload.name, upload.scope, &body)
         .await
         .map(|view| Created(Json(view)))
         .into()
@@ -173,17 +173,17 @@ async fn upload_skill(
 /// replaces is overwritten rather than left behind: a machine materializes
 /// skills by id, and two objects for one name would be two answers to the
 /// same question.
-async fn store(
+pub(crate) async fn store(
     db: &Db,
     storage: &Storage,
     user: UserId,
-    upload: UploadSkill,
+    name: &str,
+    scope: SkillScope,
     body: &[u8],
 ) -> Result<SkillView, ApiError> {
-    let name = checked_name(&upload.name)?;
+    let name = checked_name(name)?;
     checked_bundle(body)?;
 
-    let scope = upload.scope;
     let existing: Option<SkillId> = sql!(
         db,
         "SELECT id FROM skills WHERE user_id = {user} AND scope = {scope} AND name = {name.as_str()}"

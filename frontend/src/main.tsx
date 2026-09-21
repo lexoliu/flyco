@@ -17,6 +17,7 @@ import AgentsSection from "./routes/settings/AgentsSection";
 import ComputeSection from "./routes/settings/ComputeSection";
 import ToolsSection from "./routes/settings/ToolsSection";
 import McpCatalog from "./routes/settings/McpCatalog";
+import SkillCatalog from "./routes/settings/SkillCatalog";
 import InstructionsSection from "./routes/settings/InstructionsSection";
 import AccountSection from "./routes/settings/AccountSection";
 import NotFound from "./routes/NotFound";
@@ -52,6 +53,7 @@ render(
         <Route path="/compute" component={ComputeSection} />
         <Route path="/tools" component={ToolsSection} />
         <Route path="/tools/mcp-catalog" component={McpCatalog} />
+        <Route path="/tools/skill-catalog" component={SkillCatalog} />
         <Route path="/instructions" component={InstructionsSection} />
         <Route path="/account" component={AccountSection} />
       </Route>

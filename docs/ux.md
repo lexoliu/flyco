@@ -1059,9 +1059,29 @@ cards, not from forms mirroring database rows.
 |---|---|
 | Agents | one card per harness: linked state, plan, usage bars, `Relink`, `Unlink`; below, `What works on each harness`, a collapsed matrix |
 | Compute | one compute card per linked account (§7); defaults: spot on/off, preferred region; `Add compute` |
-| Tools | MCP servers as cards with an enable toggle and `Edit`, added from the registry catalog or by hand; skills as cards with scope, version, and a drop zone for a zip |
+| Tools | MCP servers as cards with an enable toggle and `Edit`, added from the registry catalog or by hand; skills as cards with scope and date, added from a plugin marketplace or dropped in as a zip |
 | Instructions | `AGENTS.md` editor with save; pending change requests from agents render as diffs with `Accept` / `Reject`; memory as an outliner tree |
 | Account | GitHub identity, API keys (create shows the key once), notifications with a single `Enable push` button, appearance, sign out |
+
+The usage bars under an account are the same windows the composer draws as
+rings, in the same order and with the same words — `5-hour`, `26% · Resets
+in 2h 10m` — because they are the same reading, filed by whichever session
+last asked and kept on the account. They are bars here and rings there for
+one reason: a settings card has horizontal room to spend on a track and a
+label, and a composer row is a line of chips where a bar would be the only
+thing asking for width. Below them sits what flyco itself observed — the
+cost the harness reported over the last day, and, once the vendor has
+actually refused a call, how much of the wait for the reset has passed.
+That half is deliberately not a quota; the plan windows above it are the
+quota, and they come from the vendor.
+
+A linked credential with an expiry says how near it is rather than printing
+a date the reader has to subtract from today. Within a week the card's pill
+reads `Expires soon` (or `Expired`), the meta line reads `Expires tomorrow`
+or `Expires in 4 days` in the warning colour, and `Relink` — the only thing
+that fixes it — becomes the card's primary rather than one of two equal
+pills. A credential with no expiry says nothing at all: an API key does not
+run out, and a reassurance that never changes is one more thing to read.
 
 ### 10.1 Adding an MCP server from the catalog
 
@@ -1097,25 +1117,44 @@ control plane serves entries already reduced to what a session machine can
 run — so the browser never sees a `server.json`, and an entry offering only
 a Docker image or a NuGet package is not in the catalog at all.
 
-The usage bars under an account are the same windows the composer draws as
-rings, in the same order and with the same words — `5-hour`, `26% · Resets
-in 2h 10m` — because they are the same reading, filed by whichever session
-last asked and kept on the account. They are bars here and rings there for
-one reason: a settings card has horizontal room to spend on a track and a
-label, and a composer row is a line of chips where a bar would be the only
-thing asking for width. Below them sits what flyco itself observed — the
-cost the harness reported over the last day, and, once the vendor has
-actually refused a call, how much of the wait for the reset has passed.
-That half is deliberately not a quota; the plan windows above it are the
-quota, and they come from the vendor.
+### 10.2 Adding a skill from a marketplace
 
-A linked credential with an expiry says how near it is rather than printing
-a date the reader has to subtract from today. Within a week the card's pill
-reads `Expires soon` (or `Expired`), the meta line reads `Expires tomorrow`
-or `Expires in 4 days` in the warning colour, and `Relink` — the only thing
-that fixes it — becomes the card's primary rather than one of two equal
-pills. A credential with no expiry says nothing at all: an API key does not
-run out, and a reassurance that never changes is one more thing to read.
+`Tools › Skills › Add from a marketplace` opens
+`/settings/tools/skill-catalog`. A skill is a directory with a `SKILL.md`
+in it, published through a *plugin marketplace*: a GitHub repository with
+`.claude-plugin/marketplace.json` at its root. `anthropics/skills` is
+offered to everybody, the user adds whichever others they trust, and flyco
+hosts no registry of its own — there is nothing to submit a skill to, and
+nothing to moderate.
+
+The page is linear and asks two things:
+
+1. **Which skill.** The shared search box over rows of directory name and
+   the sentence its `SKILL.md` gives for itself, grouped under the
+   marketplace each came from. A row is the answer.
+2. **Which agents get it**, with both already chosen. Claude Code and
+   Codex read their skills from different directories, so a skill is
+   installed once per harness picked; anyone who does not care presses
+   `Add skill` and the page returns to Tools with the new cards.
+
+Under the picker sits the list of marketplaces, the built-in one first and
+without a `Remove`, and `Add marketplace` — one field, `owner/name`. flyco
+reads a repository with the user's own GitHub account, so a private one
+works, and a marketplace whose plugins live in other GitHub repositories
+is followed into them: what the page lists is what the marketplace
+offers, wherever the files happen to be.
+
+A marketplace is read off the request path: adding one queues the read,
+and until it lands the picker says the repository is *being read* rather
+than showing it as empty, because a repository nobody has looked at yet
+and a repository that offers nothing are different answers. One that
+cannot be read — moved, renamed, or with no manifest in it — says so on
+its own line and does not stop the others being listed.
+
+Installing is flyco's work, not the user's: the control plane reads the
+skill's files out of the repository, builds the zip a skill is stored as,
+and writes it exactly as a dropped bundle is written. The browser never
+sees a zip, and nobody is asked to clone anything.
 
 ## 11. API changes this specification requires
 

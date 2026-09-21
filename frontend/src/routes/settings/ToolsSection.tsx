@@ -42,6 +42,9 @@ const SCOPE_LABEL: Record<SkillScope, string> = {
 /** Where `Add from catalog` goes: the picker over the official registry. */
 const MCP_CATALOG = "/settings/tools/mcp-catalog";
 
+/** Where `Add from a marketplace` goes: the picker over plugin marketplaces. */
+const SKILL_CATALOG = "/settings/tools/skill-catalog";
+
 function describeConfig(config: McpServerConfig): string {
   return config.transport === "stdio"
     ? `${config.command} ${config.args.join(" ")}`.trim()
@@ -236,10 +239,11 @@ function Skills() {
       <Show
         when={uploaded().length > 0}
         fallback={
-          /* The drop zone is the action; the sentence before it says what a
-             skill is, which a first visit has no other way to learn. */
+          /* The marketplace is the action; the sentence before it says what
+             a skill is, which a first visit has no other way to learn. */
           <p class={styles.lede}>
-            Skills are folders of instructions an agent can load; upload one as a .zip.
+            Skills are folders of instructions an agent can load. Pick one from a marketplace, or
+            upload your own as a .zip.
           </p>
         }
       >
@@ -249,6 +253,18 @@ function Skills() {
           </For>
         </div>
       </Show>
+
+      {/* A browser-only user picks a skill from a marketplace; the .zip is
+          the way in for one nobody publishes. */}
+      <div class={styles.actions}>
+        <A
+          href={SKILL_CATALOG}
+          class={uploaded().length > 0 ? styles.pill : styles.pillPrimary}
+        >
+          <LibraryBig size={14} aria-hidden="true" />
+          Add from a marketplace
+        </A>
+      </div>
 
       <SkillDropZone onUploaded={() => void refetch()} />
     </div>
