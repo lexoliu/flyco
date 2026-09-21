@@ -143,6 +143,54 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
   if (method === "GET" && path === "/v1/skills") {
     return Promise.resolve(jsonResponse([]));
   }
+  if (method === "GET" && path === "/v1/marketplaces") {
+    return Promise.resolve(
+      jsonResponse([
+        {
+          id: null,
+          repo: "anthropics/skills",
+          git_ref: null,
+          built_in: true,
+          added_at_unix: null,
+        },
+      ]),
+    );
+  }
+  if (method === "GET" && path === "/v1/catalog/skills") {
+    return Promise.resolve(
+      jsonResponse({
+        skills: [
+          {
+            marketplace: "anthropics/skills",
+            plugin: "document-skills",
+            name: "xlsx",
+            description: "Read and write Excel workbooks.",
+          },
+        ],
+        pending: [],
+        failed: [],
+      }),
+    );
+  }
+  if (method === "GET" && path === "/v1/catalog/mcp-servers") {
+    return Promise.resolve(
+      jsonResponse({
+        servers: [
+          {
+            name: "com.devin/deepwiki",
+            title: "DeepWiki",
+            description: "Documentation for any public GitHub repository, answered by Devin.",
+            version: "1.0.0",
+            repository_url: null,
+            website_url: "https://deepwiki.com",
+            suggested_name: "deepwiki",
+            installs: [{ kind: "remote", label: "Remote · mcp.deepwiki.com", inputs: [] }],
+          },
+        ],
+        next_cursor: null,
+      }),
+    );
+  }
   if (method === "GET" && path === "/v1/providers") {
     return Promise.resolve(jsonResponse([]));
   }

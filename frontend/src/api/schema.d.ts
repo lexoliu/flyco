@@ -188,6 +188,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/catalog/mcp-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists one page of the catalog.
+         * @description Lists one page of the catalog.
+         */
+        get: operations["flyco_api::mcp_catalog::list_catalog_mcp_servers"];
+        put?: never;
+        /**
+         * Registers a catalog server with the user's answers filled in.
+         * @description Registers a catalog server with the user's answers filled in.
+         */
+        post: operations["flyco_api::mcp_catalog::install_catalog_mcp_server"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/catalog/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists what every marketplace of the caller offers.
+         * @description Lists what every marketplace of the caller offers.
+         */
+        get: operations["flyco_api::skill_catalog::list_catalog_skills"];
+        put?: never;
+        /**
+         * Installs one catalog skill, once per harness the caller chose.
+         * @description Installs one catalog skill, once per harness the caller chose.
+         */
+        post: operations["flyco_api::skill_catalog::install_catalog_skill"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/cli-sessions": {
         parameters: {
             query?: never;
@@ -851,6 +899,50 @@ export interface paths {
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/marketplaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists the caller's marketplaces, the built-in one first.
+         * @description Lists the caller's marketplaces, the built-in one first.
+         */
+        get: operations["flyco_api::marketplaces::list_marketplaces"];
+        put?: never;
+        /**
+         * Adds a marketplace and asks for it to be read.
+         * @description Adds a marketplace and asks for it to be read.
+         */
+        post: operations["flyco_api::marketplaces::add_marketplace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/marketplaces/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Removes one of the caller's marketplaces.
+         * @description Removes one of the caller's marketplaces.
+         */
+        delete: operations["flyco_api::marketplaces::delete_marketplace"];
         options?: never;
         head?: never;
         patch?: never;
@@ -3003,6 +3095,13 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Request body of `POST /v1/marketplaces`. */
+        AddMarketplace: {
+            /** @description A branch or tag to pin. Omitted reads the default branch. */
+            git_ref?: string | null;
+            /** @description The GitHub repository, `owner/name`. */
+            repo: string;
+        };
         /**
          * @description What `GET /v1/sessions/{id}/agent/machine` tells a session's daemon.
          *
@@ -3273,6 +3372,83 @@ export interface components {
             /** @description Only machines in this provider-native region. */
             region?: string | null;
             runtime?: null | components["schemas"]["Runtime"];
+        };
+        /**
+         * @description A value the user supplies before a catalog server can be added: an
+         *     authorization header, an environment variable, a command-line argument.
+         */
+        CatalogInput: {
+            /** @description What the field starts out as, when the registry names a default. */
+            default?: string | null;
+            /** @description The registry's explanation of the value, when it gave one. */
+            description?: string | null;
+            /**
+             * @description What the value is filed under in
+             *     [`InstallCatalogMcpServer::values`]: `header:<name>`, `env:<NAME>`,
+             *     `arg:<name>` or `var:<variable>`.
+             */
+            key: string;
+            /** @description The name shown beside the field. */
+            label: string;
+            /** @description Whether the server cannot be added without it. */
+            required: boolean;
+            /** @description Whether the field should hide what is typed. */
+            secret: boolean;
+        };
+        /**
+         * @description How a catalog server would run once added.
+         *
+         *     The registry also lists Docker images, `NuGet` packages and `.mcpb`
+         *     bundles; none of those runs on a session machine, so an entry offering
+         *     only those is not in the catalog at all.
+         * @enum {string}
+         */
+        CatalogInstallKind: "remote" | "npm" | "pypi";
+        /** @description One way of running a catalog server, and what it needs from the user. */
+        CatalogMcpInstall: {
+            /** @description What the user fills in first. Empty when one click is enough. */
+            inputs: components["schemas"]["CatalogInput"][];
+            /** @description How it runs. */
+            kind: components["schemas"]["CatalogInstallKind"];
+            /**
+             * @description A line naming the endpoint or the package: `Remote · mcp.example`,
+             *     `npx @acme/mcp`.
+             */
+            label: string;
+        };
+        /** @description One server of `GET /v1/catalog/mcp-servers`. */
+        CatalogMcpServer: {
+            /** @description The publisher's one-line description. */
+            description: string;
+            /** @description Every way flyco can run it, most preferred first. */
+            installs: components["schemas"]["CatalogMcpInstall"][];
+            /** @description The registry's reverse-DNS name, `io.github.owner/server`. */
+            name: string;
+            /** @description Where the source lives, when the publisher said. */
+            repository_url?: string | null;
+            /**
+             * @description The name the server is registered under unless the user picks
+             *     another: the tail of the registry name, in the characters a harness
+             *     can announce a server as.
+             */
+            suggested_name: string;
+            /** @description The display name, when the publisher gave one. */
+            title?: string | null;
+            /** @description The version the registry lists as latest. */
+            version: string;
+            /** @description The publisher's site, when they named one. */
+            website_url?: string | null;
+        };
+        /** @description One skill a marketplace offers. */
+        CatalogSkill: {
+            /** @description What its `SKILL.md` says it is for. */
+            description: string;
+            /** @description The marketplace repository it comes from. */
+            marketplace: string;
+            /** @description The directory name, which is what it is installed as. */
+            name: string;
+            /** @description The plugin inside that marketplace that carries it. */
+            plugin: string;
         };
         /** @description Query of the two `Files` routes. */
         CheckoutPath: {
@@ -4802,6 +4978,40 @@ export interface components {
             /** @description Where it is in its life. */
             state: components["schemas"]["HostState"];
         };
+        /** @description Request body of `POST /v1/catalog/mcp-servers`. */
+        InstallCatalogMcpServer: {
+            /** @description Which of its installs to register. */
+            kind: components["schemas"]["CatalogInstallKind"];
+            /**
+             * @description The name to register it under. Omitted uses the catalog's
+             *     suggestion.
+             */
+            name?: string | null;
+            /** @description The registry name of the server, as the catalog listed it. */
+            server: string;
+            /** @description The inputs the install asked for, by key. */
+            values?: {
+                [key: string]: string;
+            };
+        };
+        /** @description Request body of `POST /v1/catalog/skills`. */
+        InstallCatalogSkill: {
+            /** @description The marketplace repository, as the catalog listed it. */
+            marketplace: string;
+            /** @description The skill's directory name, as the catalog listed it. */
+            name: string;
+            /**
+             * @description The plugin that carries it, as the catalog listed it. Two plugins
+             *     of one marketplace may publish a skill under the same name, so the
+             *     name alone does not say which directory to copy.
+             */
+            plugin: string;
+            /**
+             * @description Which harnesses get it. Empty is a request that installs nothing and
+             *     is refused.
+             */
+            scopes: components["schemas"]["SkillScope"][];
+        };
         /**
          * @description Why a session lost the machine it was running on.
          *
@@ -5212,6 +5422,49 @@ export interface components {
             /** @description Where it is in its lifecycle. */
             state: components["schemas"]["MachineState"];
             storage_hourly?: null | components["schemas"]["Usd"];
+        };
+        /** @description A marketplace flyco could not read, and why. */
+        MarketplaceProblem: {
+            /** @description What went wrong, in a sentence the user can act on. */
+            detail: string;
+            /** @description The repository that could not be read. */
+            marketplace: string;
+        };
+        /** @description One row of `GET /v1/marketplaces`. */
+        MarketplaceView: {
+            /**
+             * Format: int64
+             * @description When it was added, seconds since the Unix epoch. Absent for the
+             *     built-in one, which nobody added.
+             */
+            added_at_unix?: number | null;
+            /** @description Whether flyco provides it, in which case it cannot be removed. */
+            built_in: boolean;
+            /**
+             * @description The branch or tag read, when the user pinned one. Absent reads the
+             *     repository's default branch.
+             */
+            git_ref?: string | null;
+            id?: null | components["schemas"]["Uuid"];
+            /** @description The GitHub repository, `owner/name`. */
+            repo: string;
+        };
+        /** @description One page of `GET /v1/catalog/mcp-servers`. */
+        McpCatalogPage: {
+            /** @description Cursor for the next page, absent on the last. */
+            next_cursor?: string | null;
+            /** @description The servers on this page that flyco can run. */
+            servers: components["schemas"]["CatalogMcpServer"][];
+        };
+        /** @description What the picker asks for. */
+        McpCatalogQuery: {
+            /** @description Cursor from a previous page's `next_cursor`. */
+            cursor?: string | null;
+            /**
+             * @description Substring matched against the registry name. Omitted lists the
+             *     registry from its first page.
+             */
+            search?: string | null;
         };
         /**
          * @description How a session reaches one MCP server.
@@ -6268,6 +6521,21 @@ export interface components {
          */
         ShellStream: "stdout" | "stderr";
         /**
+         * @description Response of `GET /v1/catalog/skills`.
+         *
+         *     A marketplace is either read, still being read, or unreadable, and the
+         *     three are kept apart: a picker that showed "no skills" for a repository
+         *     it had not looked at yet would be lying.
+         */
+        SkillCatalog: {
+            /** @description Marketplaces that could not be read. */
+            failed: components["schemas"]["MarketplaceProblem"][];
+            /** @description Marketplaces still being read. */
+            pending: string[];
+            /** @description Every skill flyco can install, marketplace by marketplace. */
+            skills: components["schemas"]["CatalogSkill"][];
+        };
+        /**
          * @description Which harness's global skills directory a bundle belongs in.
          * @enum {string}
          */
@@ -7119,6 +7387,172 @@ export interface operations {
                          */
                         authorize_url: string;
                     };
+                };
+            };
+        };
+    };
+    "flyco_api::mcp_catalog::list_catalog_mcp_servers": {
+        parameters: {
+            query?: {
+                cursor?: string | null;
+                search?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Cursor for the next page, absent on the last. */
+                        next_cursor?: string | null;
+                        /** @description The servers on this page that flyco can run. */
+                        servers: components["schemas"]["CatalogMcpServer"][];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::mcp_catalog::install_catalog_mcp_server": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description Which of its installs to register. */
+                    kind: components["schemas"]["CatalogInstallKind"];
+                    /**
+                     * @description The name to register it under. Omitted uses the catalog's
+                     *     suggestion.
+                     */
+                    name?: string | null;
+                    /** @description The registry name of the server, as the catalog listed it. */
+                    server: string;
+                    /** @description The inputs the install asked for, by key. */
+                    values?: {
+                        [key: string]: string;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description How to reach it. */
+                        config: components["schemas"]["McpServerConfig"];
+                        /** @description Whether sessions are given it. */
+                        enabled: boolean;
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Name the harness announces it under. */
+                        name: string;
+                        /**
+                         * Format: int64
+                         * @description Last change, seconds since the Unix epoch.
+                         */
+                        updated_at_unix: number;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::skill_catalog::list_catalog_skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Marketplaces that could not be read. */
+                        failed: components["schemas"]["MarketplaceProblem"][];
+                        /** @description Marketplaces still being read. */
+                        pending: string[];
+                        /** @description Every skill flyco can install, marketplace by marketplace. */
+                        skills: components["schemas"]["CatalogSkill"][];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::skill_catalog::install_catalog_skill": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The marketplace repository, as the catalog listed it. */
+                    marketplace: string;
+                    /** @description The skill's directory name, as the catalog listed it. */
+                    name: string;
+                    /**
+                     * @description The plugin that carries it, as the catalog listed it. Two plugins
+                     *     of one marketplace may publish a skill under the same name, so the
+                     *     name alone does not say which directory to copy.
+                     */
+                    plugin: string;
+                    /**
+                     * @description Which harnesses get it. Empty is a request that installs nothing and
+                     *     is refused.
+                     */
+                    scopes: components["schemas"]["SkillScope"][];
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Identifier. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Directory name the bundle is installed under. */
+                        name: string;
+                        /** @description Which harness gets it. */
+                        scope: components["schemas"]["SkillScope"];
+                        /**
+                         * Format: int64
+                         * @description Size of the stored zip in bytes.
+                         */
+                        size_bytes: number;
+                        /**
+                         * Format: int64
+                         * @description When it was last uploaded, seconds since the Unix epoch.
+                         */
+                        uploaded_at_unix: number;
+                    }[];
                 };
             };
         };
@@ -8402,6 +8836,110 @@ export interface operations {
                         pending_accounts: components["schemas"]["Uuid"][];
                     };
                 };
+            };
+        };
+    };
+    "flyco_api::marketplaces::list_marketplaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was added, seconds since the Unix epoch. Absent for the
+                         *     built-in one, which nobody added.
+                         */
+                        added_at_unix?: number | null;
+                        /** @description Whether flyco provides it, in which case it cannot be removed. */
+                        built_in: boolean;
+                        /**
+                         * @description The branch or tag read, when the user pinned one. Absent reads the
+                         *     repository's default branch.
+                         */
+                        git_ref?: string | null;
+                        id?: null | components["schemas"]["Uuid"];
+                        /** @description The GitHub repository, `owner/name`. */
+                        repo: string;
+                    }[];
+                };
+            };
+        };
+    };
+    "flyco_api::marketplaces::add_marketplace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description A branch or tag to pin. Omitted reads the default branch. */
+                    git_ref?: string | null;
+                    /** @description The GitHub repository, `owner/name`. */
+                    repo: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The resource that was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /**
+                         * Format: int64
+                         * @description When it was added, seconds since the Unix epoch. Absent for the
+                         *     built-in one, which nobody added.
+                         */
+                        added_at_unix?: number | null;
+                        /** @description Whether flyco provides it, in which case it cannot be removed. */
+                        built_in: boolean;
+                        /**
+                         * @description The branch or tag read, when the user pinned one. Absent reads the
+                         *     repository's default branch.
+                         */
+                        git_ref?: string | null;
+                        id?: null | components["schemas"]["Uuid"];
+                        /** @description The GitHub repository, `owner/name`. */
+                        repo: string;
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::marketplaces::delete_marketplace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Done. There is nothing to return. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

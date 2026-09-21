@@ -60,7 +60,7 @@ export default function RepoBranchPicker(props: {
           </Show>
           <Show when={page()}>
             {(loaded) => (
-              <ul class={styles.options}>
+              <ul class={styles.optionsFill}>
                 <For each={loaded().branches}>
                   {(candidate) => (
                     <li>

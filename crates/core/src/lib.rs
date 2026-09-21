@@ -22,6 +22,7 @@ pub mod host;
 pub mod id;
 pub mod machine;
 pub mod mcp;
+pub mod mcp_catalog;
 pub mod memory;
 pub mod money;
 pub mod problem;
@@ -30,6 +31,7 @@ pub mod push;
 pub mod release;
 pub mod repo;
 pub mod session;
+pub mod skill_catalog;
 pub mod skills;
 #[cfg(feature = "sql")]
 pub mod sql;
@@ -70,9 +72,9 @@ pub use host::{
 pub use id::{
     ApiKeyId, ApprovalId, BudgetId, BudgetSignalId, ClaudeOauthAttemptId, CliSessionId,
     CodexOauthAttemptId, DevinOauthAttemptId, EnrollmentTokenId, HarnessAccountId,
-    HarnessObservationId, HostId, Id, MachineId, McpServerId, MemoryNodeId, ProviderAccountId,
-    ProviderOauthAttemptId, PushSubscriptionId, SessionId, ShellRunId, SkillId, SpendEventId,
-    UserId, WorkdirRequestId,
+    HarnessObservationId, HostId, Id, MachineId, MarketplaceId, McpServerId, MemoryNodeId,
+    ProviderAccountId, ProviderOauthAttemptId, PushSubscriptionId, SessionId, ShellRunId, SkillId,
+    SpendEventId, UserId, WorkdirRequestId,
 };
 pub use machine::{
     AUTO_MIN_MEMORY_MIB, AUTO_MIN_VCPUS, AgentMachineView, BillingMinimum, CloudProviderKind,
@@ -82,6 +84,10 @@ pub use machine::{
     StoragePricing, auto_linux_choice,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerMount, McpServerView, UpsertMcpServer};
+pub use mcp_catalog::{
+    CatalogInput, CatalogInstallKind, CatalogMcpInstall, CatalogMcpServer, InstallCatalogMcpServer,
+    McpCatalogPage,
+};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
 pub use problem::{Problem, ProblemExtensions};
@@ -106,6 +112,10 @@ pub use session::{
     TerminalInput, TerminalSize, TurnPage, TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE,
     USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause,
     excerpt,
+};
+pub use skill_catalog::{
+    AddMarketplace, BUILT_IN_MARKETPLACE, CatalogSkill, InstallCatalogSkill, MarketplaceProblem,
+    MarketplaceView, SkillCatalog,
 };
 pub use skills::{SkillMount, SkillScope, SkillView};
 pub use usage::{

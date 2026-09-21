@@ -106,6 +106,7 @@ pub const BODILESS: &[&str] = &[
     "flyco_api::machines::resize_session_machine",
     "flyco_api::machines::start_session_machine",
     "flyco_api::machines::stop_session_machine",
+    "flyco_api::marketplaces::delete_marketplace",
     "flyco_api::mcp::delete_mcp_server",
     "flyco_api::memory::delete_memory_node",
     "flyco_api::oauth::callback",

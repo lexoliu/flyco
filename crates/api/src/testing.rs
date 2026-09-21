@@ -36,7 +36,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 33] = [
+pub const MIGRATIONS: [&str; 34] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -70,6 +70,7 @@ pub const MIGRATIONS: [&str; 33] = [
     include_str!("../../../migrations/0032_session_computer_use.sql"),
     include_str!("../../../migrations/0033_request_budgets.sql"),
     include_str!("../../../migrations/0034_budget_folded_events.sql"),
+    include_str!("../../../migrations/0035_marketplaces.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -280,6 +281,10 @@ pub struct TestGithub {
     pub unreadable: Option<&'static str>,
     /// What the token endpoint answers `exchange_code` and `refresh` with.
     pub grant: GithubGrantShape,
+    /// The files of each repository, by slug: what `read_tree` lists and
+    /// `read_file` answers with. A repository not here has no files, which
+    /// is the shape a marketplace that is not a marketplace has.
+    pub files: &'static [(&'static str, FakeRepoFiles)],
 }
 
 /// Which kind of grant [`TestGithub`]'s token endpoint speaks for.
@@ -307,6 +312,7 @@ impl Default for TestGithub {
             plan: Some("pro"),
             unreadable: None,
             grant: GithubGrantShape::Lasting,
+            files: &[],
         }
     }
 }
@@ -320,6 +326,7 @@ impl TestGithub {
             plan: Some("pro"),
             unreadable: None,
             grant: GithubGrantShape::Lasting,
+            files: &[],
         }
     }
 
@@ -331,6 +338,7 @@ impl TestGithub {
             plan: Some("pro"),
             unreadable: None,
             grant: GithubGrantShape::Lasting,
+            files: &[],
         }
     }
 
@@ -343,6 +351,7 @@ impl TestGithub {
             plan: Some("pro"),
             unreadable: None,
             grant: GithubGrantShape::Renewable,
+            files: &[],
         }
     }
 
@@ -355,6 +364,7 @@ impl TestGithub {
             plan: Some("pro"),
             unreadable: None,
             grant: GithubGrantShape::RefusedRenewal,
+            files: &[],
         }
     }
 
@@ -426,6 +436,15 @@ impl TestGithub {
     fn is_ours(token: &GithubToken) -> bool {
         token.access_token == GITHUB_ACCESS_TOKEN
             || token.access_token == GITHUB_RENEWED_ACCESS_TOKEN
+    }
+}
+
+impl TestGithub {
+    /// The same client, with repositories whose files it answers for.
+    #[must_use]
+    pub const fn with_files(mut self, files: &'static [(&'static str, FakeRepoFiles)]) -> Self {
+        self.files = files;
+        self
     }
 }
 
@@ -522,6 +541,60 @@ impl GithubOauth for TestGithub {
         }))
     }
 
+    fn read_tree(
+        &self,
+        _token: &GithubToken,
+        slug: &flyco_core::RepoSlug,
+        _git_ref: &str,
+    ) -> impl Future<Output = Result<crate::github::TreeListing, GithubError>> + Send {
+        let wanted = slug.to_string();
+        let entries = self
+            .files
+            .iter()
+            .find(|(repo, _)| *repo == wanted)
+            .map(|(_, files)| {
+                files
+                    .iter()
+                    .map(|(path, body)| crate::github::TreeEntry {
+                        path: (*path).to_owned(),
+                        is_file: true,
+                        size: body.len() as u64,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        ready(Ok(crate::github::TreeListing {
+            entries,
+            truncated: false,
+        }))
+    }
+
+    fn read_file(
+        &self,
+        _token: &GithubToken,
+        slug: &flyco_core::RepoSlug,
+        _git_ref: &str,
+        path: &str,
+    ) -> impl Future<Output = Result<Vec<u8>, GithubError>> + Send {
+        let wanted = slug.to_string();
+        ready(
+            self.files
+                .iter()
+                .find(|(repo, _)| *repo == wanted)
+                .and_then(|(_, files)| {
+                    files
+                        .iter()
+                        .find(|(candidate, _)| *candidate == path)
+                        .map(|(_, body)| (*body).to_vec())
+                })
+                .ok_or_else(|| GithubError::Status {
+                    call: crate::github::GithubCall::File,
+                    status: 404,
+                    reason: format!("no {path} in {slug}"),
+                }),
+        )
+    }
+
     fn current_user(
         &self,
         token: &GithubToken,
@@ -566,6 +639,80 @@ pub const CLAUDE_TOKEN_LIFETIME: u64 = 8 * 60 * 60;
 
 /// The address [`TestClaude`] reports, which becomes the account's label.
 pub const CLAUDE_ACCOUNT_EMAIL: &str = "me@lexo.cool";
+
+/// One repository's files, as [`TestGithub`] answers for them.
+///
+/// A marketplace in a test is a list of path and bytes: the tree is its
+/// paths and a file read is a lookup, which is the whole of what the skill
+/// catalog asks GitHub for. Static rather than owned so [`TestGithub`]
+/// stays a `const`-constructible `Copy` value, which every other test in
+/// this crate builds it as.
+pub type FakeRepoFiles = &'static [(&'static str, &'static [u8])];
+/// A [`crate::mcp_catalog::McpRegistry`] that answers from captured pages.
+///
+/// Two real pages, captured from the registry on 2026-09-20: the first page
+/// of a search for `github`, and the one entry of a search for `filesystem`
+/// that carries an npm package with a named argument. Any other query is an
+/// empty page. The counter says how often the registry itself was asked,
+/// which is what the store in front of it is there to keep small.
+#[derive(Debug, Clone)]
+pub struct TestRegistry {
+    pages: std::sync::Arc<Vec<(Option<String>, crate::mcp_catalog::RegistryPage)>>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl TestRegistry {
+    /// The two captured pages.
+    #[must_use]
+    pub fn fixtures() -> Self {
+        let github: crate::mcp_catalog::RegistryPage =
+            serde_json::from_str(include_str!("../fixtures/mcp-registry/search-github.json"))
+                .expect("the fixture is a registry page");
+        let filesystem: crate::mcp_catalog::RegistryPage = serde_json::from_str(include_str!(
+            "../fixtures/mcp-registry/search-filesystem.json"
+        ))
+        .expect("the fixture is a registry page");
+        Self {
+            pages: std::sync::Arc::new(vec![
+                (Some("github".to_owned()), github),
+                (Some("filesystem".to_owned()), filesystem),
+            ]),
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    /// How many pages the registry was asked for so far.
+    #[must_use]
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl crate::mcp_catalog::McpRegistry for TestRegistry {
+    fn page(
+        &self,
+        search: Option<&str>,
+        _cursor: Option<&str>,
+    ) -> impl Future<
+        Output = Result<crate::mcp_catalog::RegistryPage, crate::mcp_catalog::RegistryError>,
+    > + Send {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // A search for an exact registry name answers the page that holds
+        // it, the way the registry's substring match does.
+        let page = self
+            .pages
+            .iter()
+            .find(|(query, page)| {
+                query.as_deref() == search
+                    || search.is_some_and(|wanted| {
+                        page.servers.iter().any(|entry| entry.server.name == wanted)
+                    })
+            })
+            .map(|(_, page)| page.clone())
+            .unwrap_or_default();
+        core::future::ready(Ok(page))
+    }
+}
 
 /// A [`crate::turnstile::SiteVerify`] that answers without a network.
 ///
@@ -1372,9 +1519,27 @@ pub fn test_router_full(
         test_config(),
         GithubClient::Fake(github),
         crate::turnstile::TurnstileClient::Fake(turnstile),
+        crate::mcp_catalog::RegistryClient::Fake(TestRegistry::fixtures()),
         vendors,
         test_clouds(),
         crate::codespaces::Codespaces::Fake(codespaces),
+        crate::request_budget::Limits::PRODUCTION,
+        db,
+        queue,
+    )
+}
+
+/// The same router, against a registry the caller holds, so a test can
+/// count how often it was asked.
+pub fn test_router_with_registry(db: Db, queue: Queue, registry: TestRegistry) -> Router {
+    router(
+        test_config(),
+        GithubClient::Fake(TestGithub::default()),
+        crate::turnstile::TurnstileClient::Fake(TestTurnstile::passing()),
+        crate::mcp_catalog::RegistryClient::Fake(registry),
+        test_vendors(),
+        test_clouds(),
+        crate::codespaces::Codespaces::Fake(TestCodespaces::succeeding()),
         crate::request_budget::Limits::PRODUCTION,
         db,
         queue,
@@ -1387,6 +1552,7 @@ pub fn test_router_budgeted(db: Db, queue: Queue, limits: crate::request_budget:
         test_config(),
         GithubClient::Fake(TestGithub::default()),
         crate::turnstile::TurnstileClient::Fake(TestTurnstile::passing()),
+        crate::mcp_catalog::RegistryClient::Fake(TestRegistry::fixtures()),
         test_vendors(),
         test_clouds(),
         crate::codespaces::Codespaces::Fake(TestCodespaces::succeeding()),

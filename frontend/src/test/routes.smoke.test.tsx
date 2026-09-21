@@ -19,6 +19,8 @@ import SettingsLayout from "../routes/settings/SettingsLayout";
 import AgentsSection from "../routes/settings/AgentsSection";
 import ComputeSection from "../routes/settings/ComputeSection";
 import ToolsSection from "../routes/settings/ToolsSection";
+import McpCatalog from "../routes/settings/McpCatalog";
+import SkillCatalog from "../routes/settings/SkillCatalog";
 import InstructionsSection from "../routes/settings/InstructionsSection";
 import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
@@ -68,6 +70,8 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
         <Route path="/agents" component={AgentsSection} />
         <Route path="/compute" component={ComputeSection} />
         <Route path="/tools" component={ToolsSection} />
+        <Route path="/tools/mcp-catalog" component={McpCatalog} />
+        <Route path="/tools/skill-catalog" component={SkillCatalog} />
         <Route path="/instructions" component={InstructionsSection} />
         <Route path="/account" component={AccountSection} />
       </Route>
@@ -789,7 +793,8 @@ describe("route smoke tests", () => {
       return base!(input, init);
     });
 
-    const { findByRole, findByText, getByLabelText } = renderAt("/sessions/abc-123");
+    const { findByRole, findByText, getByLabelText, getByRole, queryByRole } =
+      renderAt("/sessions/abc-123");
 
     const state = await findByRole("region", { name: "Session state" });
     expect(state.textContent).toContain("Interrupted · suspended");
@@ -803,10 +808,28 @@ describe("route smoke tests", () => {
     type(field, "pick up where you left off");
     fireEvent.keyDown(field, { key: "Enter" });
 
+    // Sending is what starts the machine, so it is asked first — with what
+    // the machine is and what it costs — and nothing has been sent yet.
+    const ask = await findByRole("alertdialog", { name: "Start the machine?" });
+    expect(ask.textContent).toContain("Starting it takes about a minute");
+    expect(ask.textContent).toContain("Your message is sent once it is back");
+    expect(sent).toHaveLength(0);
+
+    // "Not now" keeps the draft where it was typed.
+    fireEvent.click(getByRole("button", { name: "Not now" }));
+    await vi.waitFor(() => expect(queryByRole("alertdialog", { name: "Start the machine?" })).toBeNull());
+    expect(field.value).toBe("pick up where you left off");
+    expect(sent).toHaveLength(0);
+
+    // Sent again and confirmed, the message goes — and the field clears.
+    fireEvent.keyDown(field, { key: "Enter" });
+    fireEvent.click(await findByRole("button", { name: "Start and send" }));
+
     await vi.waitFor(() => expect(sent).toHaveLength(1));
     expect(JSON.parse(sent[0] ?? "{}")).toEqual({
       text: "pick up where you left off",
     });
+    await vi.waitFor(() => expect(field.value).toBe(""));
   });
 
   it("refuses a shell command while the suspended session's machine is off", async () => {
@@ -1060,6 +1083,28 @@ describe("route smoke tests", () => {
     expect(
       getByRole("group", { name: "Which harness gets the skill" }),
     ).toBeInTheDocument();
+  });
+
+  it("renders /settings/tools/mcp-catalog with the registry's servers", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/tools/mcp-catalog");
+    expect(
+      await findByRole("heading", { level: 2, name: "Add an MCP server" }),
+    ).toBeInTheDocument();
+    expect(getByRole("searchbox", { name: "Search the registry" })).toBeInTheDocument();
+    expect(await findByRole("button", { name: /DeepWiki/ })).toBeInTheDocument();
+    // One way back, above the title, and no primary until a server is chosen.
+    expect(getByRole("link", { name: "Back to Tools" })).toHaveAttribute("href", "/settings/tools");
+  });
+
+  it("renders /settings/tools/skill-catalog with the marketplace's skills", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/tools/skill-catalog");
+    expect(await findByRole("heading", { level: 2, name: "Add a skill" })).toBeInTheDocument();
+    expect(getByRole("searchbox", { name: "Search skills" })).toBeInTheDocument();
+    expect(await findByRole("button", { name: /xlsx/ })).toBeInTheDocument();
+    // The marketplace it came from is listed, and the built-in one cannot be
+    // removed, so the row carries no Remove button.
+    expect(await findByRole("list", { name: "Marketplaces" })).toBeInTheDocument();
+    expect(getByRole("link", { name: "Back to Tools" })).toHaveAttribute("href", "/settings/tools");
   });
 
   it("renders /settings/instructions with the AGENTS.md editor", async () => {

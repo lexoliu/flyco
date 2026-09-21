@@ -29,7 +29,7 @@ const REPOS_URL: &str = "https://api.github.com/user/repos?sort=pushed&per_page=
 const USER_URL: &str = "https://api.github.com/user";
 
 /// GitHub rejects API requests without a `User-Agent`.
-const USER_AGENT: &str = "flyco-control-plane";
+pub(crate) const USER_AGENT: &str = "flyco-control-plane";
 
 /// How many branches one page of the branch picker holds.
 ///
@@ -189,6 +189,42 @@ fn repo_url(slug: &RepoSlug) -> String {
 }
 
 /// The URL of one page of a repository's branches.
+/// Every path in a repository at one commit-ish, in one answer.
+///
+/// `recursive=1` because the alternative is a request per directory, and a
+/// marketplace's skills are three levels down.
+fn tree_url(slug: &RepoSlug, git_ref: &str) -> String {
+    format!("https://api.github.com/repos/{slug}/git/trees/{git_ref}?recursive=1")
+}
+
+/// One file's bytes at one commit-ish.
+fn file_url(slug: &RepoSlug, git_ref: &str, path: &str) -> String {
+    let encoded: String = path
+        .split('/')
+        .map(urlencoding)
+        .collect::<Vec<_>>()
+        .join("/");
+    format!("https://api.github.com/repos/{slug}/contents/{encoded}?ref={git_ref}")
+}
+
+/// Percent-encodes one path segment, which is all `file_url` needs.
+fn urlencoding(segment: &str) -> String {
+    /// The digits a percent-escape is written with.
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut encoded = String::with_capacity(segment.len());
+    for byte in segment.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+            encoded.push(char::from(byte));
+        } else {
+            encoded.push('%');
+            encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+            encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+        }
+    }
+    encoded
+}
+
 fn branches_url(slug: &RepoSlug, page: u32) -> String {
     format!("https://api.github.com/repos/{slug}/branches?per_page={BRANCHES_PER_PAGE}&page={page}")
 }
@@ -321,6 +357,11 @@ pub enum GithubCall {
     Repository,
     /// `GET /repos/{slug}/branches` — one page of a repository's branches.
     Branches,
+    /// `GET /repos/{slug}/git/trees/{ref}` — every path in a repository, which
+    /// is how a marketplace's skills are found.
+    Tree,
+    /// `GET /repos/{slug}/contents/{path}` — one file's bytes.
+    File,
 }
 
 impl core::fmt::Display for GithubCall {
@@ -332,6 +373,8 @@ impl core::fmt::Display for GithubCall {
             Self::Repositories => "repository list",
             Self::Repository => "repository lookup",
             Self::Branches => "branch list",
+            Self::Tree => "repository tree",
+            Self::File => "repository file",
         })
     }
 }
@@ -456,6 +499,127 @@ pub trait GithubOauth: Send + Sync + Clone + 'static {
         slug: &RepoSlug,
         page: u32,
     ) -> impl Future<Output = Result<BranchListing, GithubError>> + Send;
+
+    /// Lists every path in a repository at one commit-ish.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GithubError`] if the request fails, the token is invalid,
+    /// or the repository or ref is not one this token can see.
+    fn read_tree(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+    ) -> impl Future<Output = Result<TreeListing, GithubError>> + Send;
+
+    /// Reads one file's bytes at one commit-ish.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GithubError`] if the request fails, the token is invalid,
+    /// or the path is not a file this token can see.
+    fn read_file(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+        path: &str,
+    ) -> impl Future<Output = Result<Vec<u8>, GithubError>> + Send;
+}
+
+/// One entry of a repository's tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeEntry {
+    /// Path from the repository root, `skills/mcp-builder/SKILL.md`.
+    pub path: String,
+    /// Whether it is a file. A directory carries no bytes and a submodule
+    /// or symlink is not something flyco copies into a bundle.
+    pub is_file: bool,
+    /// Size in bytes, as GitHub reports it for a file.
+    pub size: u64,
+}
+
+/// A repository's whole tree at one commit-ish.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TreeListing {
+    /// The entries GitHub returned.
+    pub entries: Vec<TreeEntry>,
+    /// Whether GitHub cut the answer short, which makes it unusable for
+    /// finding a directory: a missing path would read as "not there".
+    pub truncated: bool,
+}
+
+/// The tree document GitHub answers with.
+#[derive(Debug, Deserialize)]
+struct GithubTree {
+    #[serde(default)]
+    tree: Vec<GithubTreeEntry>,
+    #[serde(default)]
+    truncated: bool,
+}
+
+/// One entry of that document.
+#[derive(Debug, Deserialize)]
+struct GithubTreeEntry {
+    path: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    size: Option<u64>,
+}
+
+impl From<GithubTree> for TreeListing {
+    fn from(tree: GithubTree) -> Self {
+        Self {
+            entries: tree
+                .tree
+                .into_iter()
+                .map(|entry| TreeEntry {
+                    is_file: entry.kind == "blob",
+                    size: entry.size.unwrap_or_default(),
+                    path: entry.path,
+                })
+                .collect(),
+            truncated: tree.truncated,
+        }
+    }
+}
+
+/// The contents document GitHub answers with, for one file.
+///
+/// Base64 rather than the raw media type: `Accept: application/vnd.github.raw`
+/// answers with the bytes, but a directory or a symlink answers with JSON
+/// under the same request, and one shape that says which is what this is
+/// for.
+#[derive(Debug, Deserialize)]
+struct GithubFile {
+    #[serde(default)]
+    content: String,
+    #[serde(default)]
+    encoding: String,
+}
+
+impl GithubFile {
+    /// The file's bytes, or the reason they could not be read.
+    fn bytes(self, call: GithubCall, path: &str) -> Result<Vec<u8>, GithubError> {
+        use base64::Engine as _;
+
+        if self.encoding != "base64" {
+            return Err(GithubError::Transport {
+                call,
+                message: format!("GitHub sent {path} as {} rather than base64", self.encoding),
+            });
+        }
+        // GitHub wraps the payload at sixty columns.
+        let packed: String = self.content.split_whitespace().collect();
+        base64::engine::general_purpose::STANDARD
+            .decode(packed)
+            .map_err(|error| GithubError::Transport {
+                call,
+                message: format!("GitHub sent {path} as base64 flyco could not read: {error}"),
+            })
+    }
 }
 
 /// One repository as GitHub's REST API reports it.
@@ -662,6 +826,33 @@ impl GithubOauth for GithubClient {
             Self::Live(client) => client.list_branches(token, slug, page).await,
             #[cfg(test)]
             Self::Fake(client) => client.list_branches(token, slug, page).await,
+        }
+    }
+
+    async fn read_tree(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+    ) -> Result<TreeListing, GithubError> {
+        match self {
+            Self::Live(client) => client.read_tree(token, slug, git_ref).await,
+            #[cfg(test)]
+            Self::Fake(client) => client.read_tree(token, slug, git_ref).await,
+        }
+    }
+
+    async fn read_file(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, GithubError> {
+        match self {
+            Self::Live(client) => client.read_file(token, slug, git_ref, path).await,
+            #[cfg(test)]
+            Self::Fake(client) => client.read_file(token, slug, git_ref, path).await,
         }
     }
 }
@@ -872,6 +1063,37 @@ impl GithubOauth for ZenwaveGithub {
         )
         .await?;
         Ok(branch_listing(branches))
+    }
+
+    async fn read_tree(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+    ) -> Result<TreeListing, GithubError> {
+        let call = GithubCall::Tree;
+        let tree = json_body::<GithubTree>(
+            call,
+            authorized_get(call, &tree_url(slug, git_ref), token).await?,
+        )
+        .await?;
+        Ok(tree.into())
+    }
+
+    async fn read_file(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, GithubError> {
+        let call = GithubCall::File;
+        let file = json_body::<GithubFile>(
+            call,
+            authorized_get(call, &file_url(slug, git_ref, path), token).await?,
+        )
+        .await?;
+        file.bytes(call, path)
     }
 }
 
@@ -1085,6 +1307,37 @@ impl GithubOauth for WorkerGithub {
         )
         .await?;
         Ok(branch_listing(branches))
+    }
+
+    async fn read_tree(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+    ) -> Result<TreeListing, GithubError> {
+        let call = GithubCall::Tree;
+        let tree = worker_json_body::<GithubTree>(
+            call,
+            worker_authorized_get(call, &tree_url(slug, git_ref), token).await?,
+        )
+        .await?;
+        Ok(tree.into())
+    }
+
+    async fn read_file(
+        &self,
+        token: &GithubToken,
+        slug: &RepoSlug,
+        git_ref: &str,
+        path: &str,
+    ) -> Result<Vec<u8>, GithubError> {
+        let call = GithubCall::File;
+        let file = worker_json_body::<GithubFile>(
+            call,
+            worker_authorized_get(call, &file_url(slug, git_ref, path), token).await?,
+        )
+        .await?;
+        file.bytes(call, path)
     }
 }
 

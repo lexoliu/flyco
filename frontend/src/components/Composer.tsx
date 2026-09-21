@@ -465,7 +465,7 @@ function HarnessChip(props: {
       >
         {(close) => (
           <div class={styles.popover}>
-            <ul class={styles.options}>
+            <ul class={styles.optionsFill}>
               <For each={props.accounts}>
                 {(account) => (
                   <li>
@@ -747,7 +747,7 @@ function RepoChip(props: {
           </Show>
           <Show when={rest().length > 0}>
             <p class={styles.popoverTitle}>Your repositories</p>
-            <ul class={styles.options}>
+            <ul class={styles.optionsFill}>
               <For each={rest()}>
                 {(candidate: RepoSummary) => (
                   <RepoRow

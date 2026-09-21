@@ -142,7 +142,7 @@ async fn register_mcp_server(
 /// answering to one name is a collision on the machine rather than a
 /// cosmetic duplicate. The unique index is the arbiter: a conflicting insert
 /// writes no row, which is what turns into the 409.
-async fn register(
+pub(crate) async fn register(
     db: &Db,
     user: UserId,
     request: UpsertMcpServer,

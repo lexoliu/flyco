@@ -171,8 +171,15 @@ export interface SessionComposerProps {
    * always there.
    */
   commands: readonly HarnessCommand[];
-  /** Sends the message, verbatim — including a leading `!` or `/`. */
-  onSend: (text: string) => void;
+  /**
+   * Sends the message, verbatim — including a leading `!` or `/`.
+   *
+   * Answers whether the message was taken. A page with a question to ask
+   * first — a stopped machine to start — answers with the question's
+   * outcome, and the field keeps the draft until it is answered: cleared
+   * on `true`, kept on `false`.
+   */
+  onSend: (text: string) => boolean | Promise<boolean>;
   /** Interrupts the running turn. */
   onStop: () => void;
   /** Runs one of flyco's own commands. */
@@ -334,8 +341,16 @@ export default function SessionComposer(props: SessionComposerProps) {
       field?.focus();
       return;
     }
-    clear();
-    props.onSend(message);
+    const taken = props.onSend(message);
+    if (taken === true) {
+      clear();
+    } else if (taken !== false) {
+      void taken.then((ok) => {
+        if (ok) {
+          clear();
+        }
+      });
+    }
   }
 
   function onInput(value: string): void {

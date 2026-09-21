@@ -118,6 +118,76 @@ pub enum ApiError {
     #[error("this skill bundle is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
     InvalidSkill(&'static str),
 
+    /// The marketplace does not exist, or belongs to somebody else.
+    #[error("marketplace not found", status = StatusCode::NOT_FOUND)]
+    MarketplaceNotFound,
+
+    /// The caller already added this marketplace.
+    #[error("you already added {repo}", status = StatusCode::CONFLICT)]
+    MarketplaceAlreadyAdded {
+        /// The repository already listed.
+        repo: String,
+    },
+
+    /// The submitted marketplace is not one flyco can read.
+    #[error("this marketplace is unusable: {0}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    InvalidMarketplace(&'static str),
+
+    /// The marketplace has not been read yet, so nothing can be installed
+    /// from it.
+    #[error(
+        "{repo} is still being read; try again in a moment",
+        status = StatusCode::CONFLICT
+    )]
+    SkillCatalogNotReady {
+        /// The repository being read.
+        repo: String,
+    },
+
+    /// The marketplace no longer offers the named skill.
+    #[error("the catalog no longer offers {name}", status = StatusCode::NOT_FOUND)]
+    CatalogSkillNotFound {
+        /// The skill asked for.
+        name: String,
+    },
+    /// The MCP Registry could not be read.
+    #[error("the MCP Registry could not be read: {0}", status = StatusCode::BAD_GATEWAY)]
+    McpRegistry(crate::mcp_catalog::RegistryError),
+
+    /// The catalog query is not one the registry can be asked.
+    #[error("this catalog query is unusable: {0}", status = StatusCode::BAD_REQUEST)]
+    InvalidCatalogQuery(&'static str),
+
+    /// The registry no longer lists the named server.
+    #[error("the catalog no longer lists {name}", status = StatusCode::NOT_FOUND)]
+    CatalogServerNotFound {
+        /// The registry name asked for.
+        name: String,
+    },
+
+    /// The named server offers no install of the requested kind.
+    #[error("{name} cannot be added as {kind}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    CatalogInstallUnavailable {
+        /// The registry name asked for.
+        name: String,
+        /// The kind asked for.
+        kind: &'static str,
+    },
+
+    /// A required input of the install was left blank.
+    #[error("the catalog entry needs a value for {key}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    CatalogInputMissing {
+        /// The input's key.
+        key: String,
+    },
+
+    /// A value was sent for an input the install never asked for.
+    #[error("the catalog entry has no input called {key}", status = StatusCode::UNPROCESSABLE_ENTITY)]
+    CatalogInputUnknown {
+        /// The key sent.
+        key: String,
+    },
+
     /// The delivery carried no `X-Hub-Signature-256`, or one that does not
     /// match the body.
     ///
@@ -1445,6 +1515,12 @@ impl From<GithubError> for ApiError {
     }
 }
 
+impl From<crate::mcp_catalog::RegistryError> for ApiError {
+    fn from(error: crate::mcp_catalog::RegistryError) -> Self {
+        Self::McpRegistry(error)
+    }
+}
+
 impl From<crate::turnstile::TurnstileError> for ApiError {
     fn from(error: crate::turnstile::TurnstileError) -> Self {
         // Both variants are flyco-side plumbing — a transport failure or a
@@ -1554,6 +1630,17 @@ impl ApiError {
             Self::InvalidMcpServer(_) => "invalid-mcp-server",
             Self::SkillNotFound => "skill-not-found",
             Self::InvalidSkill(_) => "invalid-skill",
+            Self::MarketplaceNotFound => "marketplace-not-found",
+            Self::MarketplaceAlreadyAdded { .. } => "marketplace-already-added",
+            Self::InvalidMarketplace(_) => "invalid-marketplace",
+            Self::SkillCatalogNotReady { .. } => "skill-catalog-not-ready",
+            Self::CatalogSkillNotFound { .. } => "catalog-skill-not-found",
+            Self::McpRegistry(_) => "mcp-registry-unreachable",
+            Self::InvalidCatalogQuery(_) => "invalid-catalog-query",
+            Self::CatalogServerNotFound { .. } => "catalog-server-not-found",
+            Self::CatalogInstallUnavailable { .. } => "catalog-install-unavailable",
+            Self::CatalogInputMissing { .. } => "catalog-input-missing",
+            Self::CatalogInputUnknown { .. } => "catalog-input-unknown",
             Self::WebhookUnverified => "webhook-unverified",
             Self::WebhookMalformed { .. } => "webhook-malformed",
             Self::PushSubscriptionNotFound => "push-subscription-not-found",

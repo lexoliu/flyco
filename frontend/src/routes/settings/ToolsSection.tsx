@@ -12,8 +12,9 @@
  * place either is configured.
  */
 import { For, Show, createSignal } from "solid-js";
+import { A } from "@solidjs/router";
 import { createQuery } from "../../lib/query";
-import { Plus, Upload } from "lucide-solid";
+import { LibraryBig, Plus, Upload } from "lucide-solid";
 import ProblemNotice from "../../components/ProblemNotice";
 import Toggle from "../../components/Toggle";
 import McpServerForm from "./McpServerForm";
@@ -37,6 +38,12 @@ const SCOPE_LABEL: Record<SkillScope, string> = {
   claude: "Claude Code",
   codex: "Codex",
 };
+
+/** Where `Add from catalog` goes: the picker over the official registry. */
+const MCP_CATALOG = "/settings/tools/mcp-catalog";
+
+/** Where `Add from a marketplace` goes: the picker over plugin marketplaces. */
+const SKILL_CATALOG = "/settings/tools/skill-catalog";
 
 function describeConfig(config: McpServerConfig): string {
   return config.transport === "stdio"
@@ -163,14 +170,27 @@ function McpServers() {
                     MCP servers give every session extra tools, such as a database, a browser or
                     documentation.
                   </p>
-                  <button type="button" class={styles.pillPrimary} onClick={() => setAdding(true)}>
-                    <Plus size={14} aria-hidden="true" />
-                    Add server
-                  </button>
+                  {/* The catalog is the primary: a browser-only user picks a
+                      server from a list; typing a transport by hand is the
+                      way in for one the registry does not list. */}
+                  <div class={styles.actions}>
+                    <A href={MCP_CATALOG} class={styles.pillPrimary}>
+                      <LibraryBig size={14} aria-hidden="true" />
+                      Add from catalog
+                    </A>
+                    <button type="button" class={styles.pill} onClick={() => setAdding(true)}>
+                      <Plus size={14} aria-hidden="true" />
+                      Add server
+                    </button>
+                  </div>
                 </div>
               }
             >
-              <div>
+              <div class={styles.actions}>
+                <A href={MCP_CATALOG} class={styles.pill}>
+                  <LibraryBig size={14} aria-hidden="true" />
+                  Add from catalog
+                </A>
                 <button type="button" class={styles.pill} onClick={() => setAdding(true)}>
                   <Plus size={14} aria-hidden="true" />
                   Add server
@@ -219,10 +239,11 @@ function Skills() {
       <Show
         when={uploaded().length > 0}
         fallback={
-          /* The drop zone is the action; the sentence before it says what a
-             skill is, which a first visit has no other way to learn. */
+          /* The marketplace is the action; the sentence before it says what
+             a skill is, which a first visit has no other way to learn. */
           <p class={styles.lede}>
-            Skills are folders of instructions an agent can load; upload one as a .zip.
+            Skills are folders of instructions an agent can load. Pick one from a marketplace, or
+            upload your own as a .zip.
           </p>
         }
       >
@@ -232,6 +253,18 @@ function Skills() {
           </For>
         </div>
       </Show>
+
+      {/* A browser-only user picks a skill from a marketplace; the .zip is
+          the way in for one nobody publishes. */}
+      <div class={styles.actions}>
+        <A
+          href={SKILL_CATALOG}
+          class={uploaded().length > 0 ? styles.pill : styles.pillPrimary}
+        >
+          <LibraryBig size={14} aria-hidden="true" />
+          Add from a marketplace
+        </A>
+      </div>
 
       <SkillDropZone onUploaded={() => void refetch()} />
     </div>

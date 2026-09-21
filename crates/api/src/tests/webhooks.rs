@@ -48,6 +48,7 @@ async fn configured_router(db: &Db) -> Router {
         test_config(),
         GithubClient::Fake(TestGithub::default()),
         TurnstileClient::Fake(TestTurnstile::passing()),
+        crate::mcp_catalog::RegistryClient::Fake(crate::testing::TestRegistry::fixtures()),
         test_vendors(),
         test_clouds(),
         crate::testing::test_codespaces(),

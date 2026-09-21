@@ -725,7 +725,11 @@ in that space is the one action that will change the state. The same rule
 covers every refusing state, which is why the composer no longer carries a
 `refusal` of its own. An `interrupted` session is the one exception: a
 message sent to it is what starts its machine again (§9.9), so its composer
-stays open and reads `Sent when the machine is back`.
+stays open and reads `Sent when the machine is back` — and, because that
+start is a minute's wait and an hourly price the user did not just choose,
+it is asked before it happens: `Start the machine?`, naming the machine and
+its rate, with `Start and send` as the one primary action and `Not now`
+leaving the draft in the field.
 
 ### 9.2 Transcript
 
@@ -1042,7 +1046,7 @@ A session with nothing to do still has a machine running, and a machine running 
 
 The same rule covers every provider. A codespace gets it from GitHub's own idle clock; everything else — an Azure VM, an AWS spot instance, a container on the user's own machine — is suspended by flyco on the same threshold, because a session should not cost differently for being idle on one cloud than another.
 
-Coming back is one word. A message sent to a suspended session starts the machine on its own disk and is delivered when the daemon attaches — the composer stays open for exactly this — and deciding a pending approval does the same, because the answer has to reach somebody. The timeline gains a `Migrating` row (`Starting the machine`, then `Agent ready`) where the gap happened, and the agent is told the machine was suspended and started again, so a process it left running is not mistaken for one still alive. Thirty seconds of cold start is the whole cost of the thirty minutes that were not billed.
+Coming back is one word and one question. A message sent to a suspended session starts the machine on its own disk and is delivered when the daemon attaches — the composer stays open for exactly this — but the start is asked for first (`Start the machine?`, with the machine's name, the minute it takes and what it bills), because a user who typed a sentence did not thereby choose to pay for a machine; `Not now` keeps the message in the field. Deciding a pending approval starts the machine without asking, because the answer has to reach somebody. The timeline gains a `Migrating` row (`Starting the machine`, then `Agent ready`) where the gap happened, and the agent is told the machine was suspended and started again, so a process it left running is not mistaken for one still alive. Thirty seconds of cold start is the whole cost of the thirty minutes that were not billed.
 
 A session nobody ever speaks to again is still archived at a week — suspension changed what it costs to wait, not how long flyco waits.
 
@@ -1055,7 +1059,7 @@ cards, not from forms mirroring database rows.
 |---|---|
 | Agents | one card per harness: linked state, plan, usage bars, `Relink`, `Unlink`; below, `What works on each harness`, a collapsed matrix |
 | Compute | one compute card per linked account (§7); defaults: spot on/off, preferred region; `Add compute` |
-| Tools | MCP servers as cards with an enable toggle and `Edit`; skills as cards with scope, version, and a drop zone for a zip |
+| Tools | MCP servers as cards with an enable toggle and `Edit`, added from the registry catalog or by hand; skills as cards with scope and date, added from a plugin marketplace or dropped in as a zip |
 | Instructions | `AGENTS.md` editor with save; pending change requests from agents render as diffs with `Accept` / `Reject`; memory as an outliner tree |
 | Account | GitHub identity, API keys (create shows the key once), notifications with a single `Enable push` button, appearance, sign out |
 
@@ -1078,6 +1082,79 @@ or `Expires in 4 days` in the warning colour, and `Relink` — the only thing
 that fixes it — becomes the card's primary rather than one of two equal
 pills. A credential with no expiry says nothing at all: an API key does not
 run out, and a reassurance that never changes is one more thing to read.
+
+### 10.1 Adding an MCP server from the catalog
+
+`Tools › MCP servers › Add from catalog` opens `/settings/tools/mcp-catalog`:
+the [official MCP Registry](https://registry.modelcontextprotocol.io),
+searched by name. It is the primary way to add a server, and `Add server` —
+the form where a transport is typed by hand — stays beside it for one the
+registry does not list. A user with only a browser can therefore add a
+server without knowing what `npx` is.
+
+The page is linear and each page of it asks one thing:
+
+1. **Which server.** The shared search box over rows of name, description
+   and the registry name, each row carrying a pill per way it can run
+   (`REMOTE`, `NPM`, `PYPI`). A row *is* the answer: there is no `Continue`.
+   `Load more` extends the list; the search settles a moment after typing
+   stops, because every distinct search is one page read.
+2. **How it should run**, drawn only when the entry offers more than one
+   way. Skipped entirely — as a stage is — when there is only one.
+3. **The values it needs**, drawn only when the registry says it needs any:
+   the name sessions announce the server under, then a field per header,
+   environment variable or argument the entry names, secrets masked and the
+   registry's own description under each. One primary, `Add server`.
+
+A server needing nothing is registered the moment its row is chosen, and
+the page returns to Tools with the new card. The one thing that can send a
+one-click add to the last page is a name already in use: the clash is
+stated there with the name to change, which is the only decision the user
+can make about it.
+
+flyco translates the registry's entry into the server it registers — the
+control plane serves entries already reduced to what a session machine can
+run — so the browser never sees a `server.json`, and an entry offering only
+a Docker image or a NuGet package is not in the catalog at all.
+
+### 10.2 Adding a skill from a marketplace
+
+`Tools › Skills › Add from a marketplace` opens
+`/settings/tools/skill-catalog`. A skill is a directory with a `SKILL.md`
+in it, published through a *plugin marketplace*: a GitHub repository with
+`.claude-plugin/marketplace.json` at its root. `anthropics/skills` is
+offered to everybody, the user adds whichever others they trust, and flyco
+hosts no registry of its own — there is nothing to submit a skill to, and
+nothing to moderate.
+
+The page is linear and asks two things:
+
+1. **Which skill.** The shared search box over rows of directory name and
+   the sentence its `SKILL.md` gives for itself, grouped under the
+   marketplace each came from. A row is the answer.
+2. **Which agents get it**, with both already chosen. Claude Code and
+   Codex read their skills from different directories, so a skill is
+   installed once per harness picked; anyone who does not care presses
+   `Add skill` and the page returns to Tools with the new cards.
+
+Under the picker sits the list of marketplaces, the built-in one first and
+without a `Remove`, and `Add marketplace` — one field, `owner/name`. flyco
+reads a repository with the user's own GitHub account, so a private one
+works, and a marketplace whose plugins live in other GitHub repositories
+is followed into them: what the page lists is what the marketplace
+offers, wherever the files happen to be.
+
+A marketplace is read off the request path: adding one queues the read,
+and until it lands the picker says the repository is *being read* rather
+than showing it as empty, because a repository nobody has looked at yet
+and a repository that offers nothing are different answers. One that
+cannot be read — moved, renamed, or with no manifest in it — says so on
+its own line and does not stop the others being listed.
+
+Installing is flyco's work, not the user's: the control plane reads the
+skill's files out of the repository, builds the zip a skill is stored as,
+and writes it exactly as a dropped bundle is written. The browser never
+sees a zip, and nobody is asked to clone anything.
 
 ## 11. API changes this specification requires
 

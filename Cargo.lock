@@ -2183,6 +2183,7 @@ dependencies = [
  "wasm-bindgen",
  "web-push-native",
  "zenwave",
+ "zip",
 ]
 
 [[package]]

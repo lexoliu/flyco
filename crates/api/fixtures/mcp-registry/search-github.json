@@ -1,0 +1,290 @@
+{
+  "servers": [
+    {
+      "server": {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+        "name": "ai.smithery/Hint-Services-obsidian-github-mcp",
+        "description": "Connect AI assistants to your GitHub-hosted Obsidian vault to seamlessly access, search, and analy…",
+        "repository": {
+          "url": "https://github.com/Hint-Services/obsidian-github-mcp",
+          "source": "github"
+        },
+        "version": "0.4.0",
+        "remotes": [
+          {
+            "type": "streamable-http",
+            "url": "https://server.smithery.ai/@Hint-Services/obsidian-github-mcp/mcp",
+            "headers": [
+              {
+                "description": "Bearer token for Smithery authentication",
+                "isRequired": true,
+                "value": "Bearer {smithery_api_key}",
+                "isSecret": true,
+                "name": "Authorization"
+              }
+            ]
+          }
+        ]
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active",
+          "statusChangedAt": "2025-09-14T15:20:36.371442Z",
+          "publishedAt": "2025-09-14T15:20:36.371442Z",
+          "updatedAt": "2025-09-14T15:20:36.371442Z",
+          "isLatest": true
+        }
+      }
+    },
+    {
+      "server": {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "com.mambabuilt/mcp-github-organization-signal-scanner",
+        "description": "Resolve a company domain to its GitHub organization with repo, language and activity signals.",
+        "repository": {
+          "url": "https://github.com/mambalabsdev/mcp-github-organization-signal-scanner",
+          "source": "github"
+        },
+        "version": "1.0.0",
+        "packages": [
+          {
+            "registryType": "npm",
+            "identifier": "@mambalabsdev/mcp-github-organization-signal-scanner",
+            "version": "1.0.0",
+            "transport": {
+              "type": "stdio"
+            },
+            "environmentVariables": [
+              {
+                "description": "Apify API token from https://console.apify.com/account/integrations",
+                "isRequired": true,
+                "format": "string",
+                "isSecret": true,
+                "name": "APIFY_TOKEN"
+              }
+            ]
+          }
+        ]
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active",
+          "statusChangedAt": "2026-08-24T09:41:04.283638Z",
+          "publishedAt": "2026-08-24T09:41:04.283638Z",
+          "updatedAt": "2026-08-24T09:41:04.283638Z",
+          "isLatest": true
+        }
+      }
+    },
+    {
+      "server": {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "com.mcparmory/github",
+        "description": "Manage repositories, users, releases, and automate GitHub workflows",
+        "repository": {
+          "url": "https://github.com/mcparmory/registry",
+          "source": "github"
+        },
+        "version": "1.0.6",
+        "packages": [
+          {
+            "registryType": "pypi",
+            "identifier": "mcparmory-github",
+            "version": "1.0.6",
+            "runtimeHint": "uvx",
+            "transport": {
+              "type": "stdio"
+            }
+          },
+          {
+            "registryType": "oci",
+            "identifier": "ghcr.io/mcparmory/github:1.0.6",
+            "runtimeHint": "docker",
+            "transport": {
+              "type": "stdio"
+            }
+          }
+        ]
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active",
+          "statusChangedAt": "2026-05-11T21:37:47.993849Z",
+          "publishedAt": "2026-05-11T21:37:47.993849Z",
+          "updatedAt": "2026-05-11T21:37:47.993849Z",
+          "isLatest": true
+        }
+      }
+    },
+    {
+      "server": {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "io.github.06ketan/medium-ops",
+        "description": "Medium CLI + 23-tool MCP server. Your IDE drafts replies. No API keys.",
+        "title": "medium-ops",
+        "repository": {
+          "url": "https://github.com/06ketan/medium-ops",
+          "source": "github"
+        },
+        "version": "0.1.2",
+        "websiteUrl": "https://medium-ops.chavan.in",
+        "packages": [
+          {
+            "registryType": "pypi",
+            "registryBaseUrl": "https://pypi.org",
+            "identifier": "medium-ops",
+            "version": "0.1.2",
+            "runtimeHint": "uvx",
+            "transport": {
+              "type": "stdio"
+            },
+            "packageArguments": [
+              {
+                "value": "mcp",
+                "type": "positional"
+              },
+              {
+                "value": "serve",
+                "type": "positional"
+              }
+            ],
+            "environmentVariables": [
+              {
+                "description": "Legacy Medium Integration Token (api.medium.com/v1/*). Optional. Generate at medium.com/me/settings → 'Integration tokens' (note: Medium stopped issuing new tokens in 2023).",
+                "isSecret": true,
+                "name": "MEDIUM_INTEGRATION_TOKEN"
+              },
+              {
+                "description": "Medium 'sid' cookie value from medium.com (Application → Cookies). Used for authenticated reads + dashboard GraphQL.",
+                "isSecret": true,
+                "name": "MEDIUM_SID"
+              },
+              {
+                "description": "Medium 'uid' cookie value. Required alongside sid for some authenticated endpoints.",
+                "name": "MEDIUM_UID"
+              },
+              {
+                "description": "Medium 'xsrf' cookie value. Required for any dashboard write (post_response, publish_post, delete_post, draft updates).",
+                "isSecret": true,
+                "name": "MEDIUM_XSRF"
+              },
+              {
+                "description": "Cloudflare 'cf_clearance' cookie. Only required when Cloudflare challenges your IP for dashboard write calls.",
+                "isSecret": true,
+                "name": "MEDIUM_CF_CLEARANCE"
+              },
+              {
+                "description": "Your Medium handle (without the @). Required for the public RSS read path so the client knows whose feed to fetch.",
+                "name": "MEDIUM_USERNAME"
+              },
+              {
+                "description": "Override path to the mcp.json file the auth layer reads. Defaults to ~/.cursor/mcp.json.",
+                "name": "MEDIUM_OPS_MCP_PATH"
+              },
+              {
+                "description": "Optional: override the host CLI used by the unattended daemon path (default: auto-detect claude / cursor-agent / codex on PATH). Use {prompt} placeholder if your CLI takes the prompt as an arg.",
+                "name": "MEDIUM_OPS_LLM_CMD"
+              }
+            ]
+          }
+        ],
+        "_meta": {
+          "io.modelcontextprotocol.registry/publisher-provided": {
+            "tool": "manual",
+            "version": "0.1.2"
+          }
+        }
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active",
+          "statusChangedAt": "2026-05-03T06:02:58.252062Z",
+          "publishedAt": "2026-05-03T06:02:58.252062Z",
+          "updatedAt": "2026-05-03T06:02:58.252062Z",
+          "isLatest": true
+        }
+      }
+    },
+    {
+      "server": {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "io.github.0nork/0nMCP",
+        "description": "Universal AI API Orchestrator — 1,554 tools, 96 services. One install.",
+        "title": "0nMCP — Universal AI API Orchestrator",
+        "repository": {
+          "url": "https://github.com/0nork/0nMCP",
+          "source": "github"
+        },
+        "version": "4.5.1",
+        "icons": [
+          {
+            "src": "https://0nmcp.com/icons/icon-192.png",
+            "mimeType": "image/png",
+            "sizes": [
+              "192x192"
+            ]
+          },
+          {
+            "src": "https://0nmcp.com/icons/icon-512.png",
+            "mimeType": "image/png",
+            "sizes": [
+              "512x512"
+            ]
+          }
+        ],
+        "packages": [
+          {
+            "registryType": "npm",
+            "identifier": "0nmcp",
+            "version": "4.5.1",
+            "transport": {
+              "type": "stdio"
+            }
+          }
+        ],
+        "remotes": [
+          {
+            "type": "streamable-http",
+            "url": "https://0nmcp.com/api/mcp"
+          }
+        ]
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active",
+          "statusChangedAt": "2026-04-23T05:53:15.161275Z",
+          "publishedAt": "2026-04-23T05:53:15.161275Z",
+          "updatedAt": "2026-04-23T05:53:15.161275Z",
+          "isLatest": true
+        }
+      }
+    },
+    {
+      "server": {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "io.github.0spoon/seamless",
+        "description": "Local-first shared memory and task coordination for AI coding agents. Go daemon plus headless CLI.",
+        "title": "Seamless",
+        "repository": {
+          "url": "https://github.com/0spoon/seamless",
+          "source": "github"
+        },
+        "version": "0.4.9",
+        "websiteUrl": "https://thereisnospoon.org"
+      },
+      "_meta": {
+        "io.modelcontextprotocol.registry/official": {
+          "status": "active",
+          "statusChangedAt": "2026-08-07T19:56:46.117159Z",
+          "publishedAt": "2026-08-07T19:56:46.117159Z",
+          "updatedAt": "2026-08-07T19:56:46.117159Z",
+          "isLatest": true
+        }
+      }
+    }
+  ],
+  "metadata": {
+    "nextCursor": "io.github.0xSoftBoi/suwappu:0.1.1",
+    "count": 6
+  }
+}
