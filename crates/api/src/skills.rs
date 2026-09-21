@@ -6,9 +6,10 @@
 //! the harness it belongs to therefore ride the query string, which is what
 //! keeps the body exactly the bytes that get stored.
 //!
-//! Agents cannot write either harness's skills directory — it is read-only
-//! and a hook refuses the write — so an agent that wants to publish a skill
-//! calls the `skill_upload` MCP tool, which lands on this same route.
+//! Agents cannot write either harness's skills directory — it is
+//! read-only — so a skill arrives only through the control plane: an
+//! upload on Settings → Tools lands on this route, and a marketplace
+//! install goes through [`crate::skill_catalog`] into the same `store`.
 //!
 //! # Where a bundle lives
 //!
@@ -16,11 +17,16 @@
 //! the name, the scope and the size, and the bytes sit at
 //! `skills/{id}.zip`. Claude Code and Codex read different global skills
 //! directories, so [`SkillScope`] is what decides which one a bundle is
-//! installed into — a machine renders that at provisioning time, and a live
-//! session picks a change up the next time its machine does, exactly as it
-//! does for MCP servers. Nothing is pushed into a running harness: a skills
-//! directory is read when the process starts, and swapping it mid-turn would
-//! leave the model holding skills that no longer exist.
+//! installed into.
+//!
+//! The machine pulls, nothing pushes: a session's daemon reads the owner's
+//! mount list from `GET /v1/sessions/{id}/skills` and each bundle from
+//! `GET /v1/sessions/{id}/skills/{skill}/bundle`, then unpacks them into
+//! the harness's directory before the agent starts (see
+//! `crates/daemon/src/skills.rs`). A live session picks a change up the
+//! next time its machine starts, exactly as it does for MCP servers — a
+//! skills directory is read when the harness launches, and swapping it
+//! mid-turn would leave the model holding skills that no longer exist.
 //!
 //! The object is written before the row, and the row's `id` is reused when a
 //! bundle of the same name and scope already exists. D1 has no transactions,
@@ -28,7 +34,7 @@
 //! row names, which is invisible; the other would leave a row naming an
 //! object that is not there, which every reader would trip over.
 
-use flyco_core::{CurrentUser, SkillId, SkillScope, SkillView, UserId};
+use flyco_core::{CurrentUser, SkillId, SkillMount, SkillScope, SkillView, UserId};
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
@@ -84,6 +90,17 @@ impl From<SkillRow> for SkillView {
             scope: row.scope,
             size_bytes: row.size_bytes,
             uploaded_at_unix: row.uploaded_at_unix,
+        }
+    }
+}
+
+impl From<SkillRow> for SkillMount {
+    fn from(row: SkillRow) -> Self {
+        Self {
+            id: row.id,
+            name: row.name,
+            scope: row.scope,
+            size_bytes: row.size_bytes,
         }
     }
 }
@@ -275,6 +292,54 @@ async fn load(db: &Db, user: UserId, id: SkillId) -> Result<SkillRow, ApiError> 
     .fetch_optional()
     .await?
     .ok_or(ApiError::SkillNotFound)
+}
+
+/// The mount list a session's daemon installs, in the owner's name.
+///
+/// `GET /v1/sessions/{id}/skills` resolves the session to its owner and
+/// calls this — the daemon's `fd_` token names a session, never a user, so
+/// the owner is derived here rather than taken from the caller.
+///
+/// # Errors
+///
+/// Returns [`ApiError`] if the database fails.
+pub async fn mounts(db: &Db, user: UserId) -> Result<Vec<SkillMount>, ApiError> {
+    let rows: Vec<SkillRow> = sql!(
+        db,
+        "SELECT id, name, scope, size_bytes, uploaded_at_unix FROM skills \
+         WHERE user_id = {user} ORDER BY name, id"
+    )
+    .fetch_all()
+    .await?;
+
+    Ok(rows.into_iter().map(Into::into).collect())
+}
+
+/// One bundle's bytes for a session's daemon, in the owner's name.
+///
+/// The row is read scoped to `user`, so a skill id from somebody else's
+/// registry is a 404 like every other owner-scoped read — and so is a row
+/// whose object is gone, which the store's write order (object first, then
+/// row) can never produce.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SkillNotFound`] if `id` is not one of `user`'s
+/// skills, or [`ApiError`] if the database or the bucket fails.
+pub async fn bundle(
+    db: &Db,
+    storage: &Storage,
+    user: UserId,
+    id: SkillId,
+) -> Result<Vec<u8>, ApiError> {
+    load(db, user, id).await?;
+    let object = storage
+        .get(&bundle_key(id))
+        .await?
+        .ok_or(ApiError::CorruptRecord(
+            "a skills row names a bundle that is not stored",
+        ))?;
+    Ok(object.body)
 }
 
 /// The user-scoped skill routes.

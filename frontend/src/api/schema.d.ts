@@ -2531,6 +2531,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lists the skills this session's machine installs before the harness starts — the session owner's whole registry, scoped by `sessions::owner` because the `fd_` token names a session and never a user.
+         * @description Lists the skills this session's machine installs before the harness
+         *     starts — the session owner's whole registry, scoped by
+         *     `sessions::owner` because the `fd_` token names a session and never a
+         *     user.
+         *
+         *     Costs two D1 reads per call: the session's owner, then the owner's
+         *     skills rows — a list bounded by how many skills one account holds.
+         */
+        get: operations["flyco_api::app::get_session_skills"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sessions/{id}/skills/{skill}/bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Streams one skill bundle to this session's daemon, which unpacks it into the harness's global skills directory.
+         * @description Streams one skill bundle to this session's daemon, which unpacks it
+         *     into the harness's global skills directory.
+         *
+         *     Costs two D1 reads — the session's owner and the skill row, owner-scoped
+         *     so another user's id is a 404 — plus one R2 read whose size is the
+         *     stored bundle (at most [`skills::MAX_BUNDLE_BYTES`]).
+         */
+        get: operations["flyco_api::app::get_session_skill_bundle"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/spot-notice": {
         parameters: {
             query?: never;
@@ -11727,6 +11778,61 @@ export interface operations {
         responses: {
             /** @description Recorded. The outcome arrives on the session relay, not in this response. */
             202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    "flyco_api::app::get_session_skills": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description Identifier, which the daemon hands back to fetch the bundle. */
+                        id: components["schemas"]["Uuid"];
+                        /** @description Directory name the bundle is installed under. */
+                        name: string;
+                        /** @description Which harness gets it. */
+                        scope: components["schemas"]["SkillScope"];
+                        /**
+                         * Format: int64
+                         * @description Size of the stored zip in bytes.
+                         */
+                        size_bytes: number;
+                    }[];
+                };
+            };
+        };
+    };
+    "flyco_api::app::get_session_skill_bundle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+                skill: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };

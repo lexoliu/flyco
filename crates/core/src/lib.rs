@@ -117,7 +117,7 @@ pub use skill_catalog::{
     AddMarketplace, BUILT_IN_MARKETPLACE, CatalogSkill, InstallCatalogSkill, MarketplaceProblem,
     MarketplaceView, SkillCatalog,
 };
-pub use skills::{SkillScope, SkillView};
+pub use skills::{SkillMount, SkillScope, SkillView};
 pub use usage::{
     CloudSpend, CloudUsageView, HarnessObservation, LlmUsageView, OBSERVATION_WINDOW_SECONDS,
     RateLimitObservation,

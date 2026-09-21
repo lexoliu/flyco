@@ -316,6 +316,22 @@ impl ControlApi for RecordingApi {
         core::future::ready(Ok(None))
     }
 
+    fn list_skills(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Vec<flyco_core::SkillMount>, ControlApiError>> + Send
+    {
+        core::future::ready(Ok(Vec::new()))
+    }
+
+    fn skill_bundle(
+        &self,
+        _skill: flyco_core::SkillId,
+    ) -> impl core::future::Future<Output = Result<Vec<u8>, ControlApiError>> + Send {
+        core::future::ready(Err(ControlApiError::Transport(
+            "the test control plane serves no skill bundles".to_owned(),
+        )))
+    }
+
     fn report_stopping(
         &self,
         reason: StopReason,
@@ -3101,6 +3117,25 @@ mod remote_store {
         ) -> impl core::future::Future<Output = Result<Option<Vec<u8>>, ControlApiError>> + Send
         {
             core::future::ready(Ok(None))
+        }
+
+        fn list_skills(
+            &self,
+        ) -> impl core::future::Future<
+            Output = Result<Vec<flyco_core::SkillMount>, ControlApiError>,
+        > + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store lists no skills".to_owned(),
+            )))
+        }
+
+        fn skill_bundle(
+            &self,
+            _skill: flyco_core::SkillId,
+        ) -> impl core::future::Future<Output = Result<Vec<u8>, ControlApiError>> + Send {
+            core::future::ready(Err(ControlApiError::Transport(
+                "the transcript store serves no skill bundles".to_owned(),
+            )))
         }
 
         fn report_stage(

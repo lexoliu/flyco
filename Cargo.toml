@@ -125,11 +125,13 @@ tokio = { version = "1", features = [
     "time",
 ] }
 toml = "0.9"
-# Skill bundles are zips, and the control plane builds one when a skill is
-# installed from a marketplace. Default features off: the archives are
+# Skill bundles are zips: the control plane builds one when a skill is
+# installed from a marketplace, and the daemon unpacks them on the session
+# machine. Default features off: the archives the control plane builds are
 # stored rather than deflated, so no compression backend is linked into the
-# Worker.
-zip = { version = "8", default-features = false }
+# Worker — `flyco-daemon` enables `deflate` on its own edge, because an
+# uploaded bundle may be compressed.
+zip = { version = "8.6", default-features = false }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # Auth stack: pure-Rust crypto and encodings, all verified on wasm32.
