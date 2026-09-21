@@ -29,7 +29,7 @@ const REPOS_URL: &str = "https://api.github.com/user/repos?sort=pushed&per_page=
 const USER_URL: &str = "https://api.github.com/user";
 
 /// GitHub rejects API requests without a `User-Agent`.
-const USER_AGENT: &str = "flyco-control-plane";
+pub(crate) const USER_AGENT: &str = "flyco-control-plane";
 
 /// How many branches one page of the branch picker holds.
 ///

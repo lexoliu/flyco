@@ -36,6 +36,7 @@ use crate::error::ApiError;
 use crate::extract::{CallerLocation, Headers, path_id, path_segment};
 use crate::github::{GithubClient, GithubOauth};
 use crate::host_room::HostAttachResponse;
+use crate::mcp_catalog::RegistryClient;
 use crate::middleware::{DaemonSession, RequireAuth, RequireDaemon};
 use crate::problem::Outcome;
 use crate::provisioning_queue::{self, ProvisioningJob};
@@ -46,10 +47,10 @@ use crate::turnstile::TurnstileClient;
 use crate::vendors::Vendors;
 use crate::{
     agents_md, api_keys, approvals, claude_oauth, cli, codespaces, codex_oauth, daemon_tokens,
-    devin_oauth, env, handoffs, harness_accounts, hosts, idempotency, machines, mcp, memory, oauth,
-    observations, problem, provider_accounts, provider_oauth, provisioning, push, relay, releases,
-    repos, responses, session_repos, sessions, skills, transcripts, turns, usage_limits, users,
-    webhooks, workdirs,
+    devin_oauth, env, handoffs, harness_accounts, hosts, idempotency, machines, mcp, mcp_catalog,
+    memory, oauth, observations, problem, provider_accounts, provider_oauth, provisioning, push,
+    relay, releases, repos, responses, session_repos, sessions, skills, transcripts, turns,
+    usage_limits, users, webhooks, workdirs,
 };
 use flyco_core::wire::EventPage;
 
@@ -3743,6 +3744,7 @@ fn authenticated_routes() -> Vec<RouteNode> {
     nodes.extend(hosts::routes());
     nodes.extend(machines::routes());
     nodes.extend(mcp::routes());
+    nodes.extend(mcp_catalog::routes());
     nodes.extend(memory::routes());
     nodes.extend(provider_accounts::routes());
     nodes.extend(provider_oauth::routes());
@@ -3851,6 +3853,7 @@ pub fn router(
     config: ApiConfig,
     github: GithubClient,
     turnstile: TurnstileClient,
+    registry: RegistryClient,
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
@@ -3859,7 +3862,7 @@ pub fn router(
     queue: Queue,
 ) -> Router {
     configured(
-        config, github, turnstile, vendors, clouds, codespaces, limits,
+        config, github, turnstile, registry, vendors, clouds, codespaces, limits,
     )
     .with(db)
     .with(queue)
@@ -3880,10 +3883,13 @@ pub fn router(
 /// check and after the handler ran, and inside the service layers that
 /// inject the database its ledger flushes to.
 #[cfg(not(target_arch = "wasm32"))]
+// The same wiring seam as `router`: one parameter per injected dependency.
+#[allow(clippy::too_many_arguments)]
 fn configured(
     config: ApiConfig,
     github: GithubClient,
     turnstile: TurnstileClient,
+    registry: RegistryClient,
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
@@ -3898,6 +3904,7 @@ fn configured(
             .with(State(config))
             .with(State(github))
             .with(State(turnstile))
+            .with(State(registry))
             .with(State(clouds))
             .with(State(codespaces))
             .with(State(vendors.claude.clone()))
@@ -3915,6 +3922,7 @@ fn configured(
 fn configured_from_request(
     github: GithubClient,
     turnstile: TurnstileClient,
+    registry: RegistryClient,
     vendors: Vendors,
     clouds: Clouds,
     codespaces: Codespaces,
@@ -3929,6 +3937,7 @@ fn configured_from_request(
             .with(crate::middleware::LoadApiConfig)
             .with(State(github))
             .with(State(turnstile))
+            .with(State(registry))
             .with(State(clouds))
             .with(State(codespaces))
             .with(State(vendors.claude.clone()))
@@ -3982,6 +3991,7 @@ pub fn router_from_environment() -> Router {
             config,
             GithubClient::default(),
             TurnstileClient::default(),
+            RegistryClient::default(),
             Vendors::default(),
             Clouds::default(),
             Codespaces::default(),
@@ -3994,6 +4004,7 @@ pub fn router_from_environment() -> Router {
         configured_from_request(
             GithubClient::default(),
             TurnstileClient::default(),
+            RegistryClient::default(),
             Vendors::default(),
             Clouds::default(),
             Codespaces::default(),

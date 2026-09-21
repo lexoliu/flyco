@@ -22,6 +22,7 @@ pub mod host;
 pub mod id;
 pub mod machine;
 pub mod mcp;
+pub mod mcp_catalog;
 pub mod memory;
 pub mod money;
 pub mod problem;
@@ -82,6 +83,10 @@ pub use machine::{
     StoragePricing, auto_linux_choice,
 };
 pub use mcp::{HeaderEntry, McpServerConfig, McpServerMount, McpServerView, UpsertMcpServer};
+pub use mcp_catalog::{
+    CatalogInput, CatalogInstallKind, CatalogMcpInstall, CatalogMcpServer, InstallCatalogMcpServer,
+    McpCatalogPage,
+};
 pub use memory::{CreateMemoryNode, MemoryNode, UpdateMemoryNode};
 pub use money::Usd;
 pub use problem::{Problem, ProblemExtensions};

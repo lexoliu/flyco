@@ -12,8 +12,9 @@
  * place either is configured.
  */
 import { For, Show, createSignal } from "solid-js";
+import { A } from "@solidjs/router";
 import { createQuery } from "../../lib/query";
-import { Plus, Upload } from "lucide-solid";
+import { LibraryBig, Plus, Upload } from "lucide-solid";
 import ProblemNotice from "../../components/ProblemNotice";
 import Toggle from "../../components/Toggle";
 import McpServerForm from "./McpServerForm";
@@ -37,6 +38,9 @@ const SCOPE_LABEL: Record<SkillScope, string> = {
   claude: "Claude Code",
   codex: "Codex",
 };
+
+/** Where `Add from catalog` goes: the picker over the official registry. */
+const MCP_CATALOG = "/settings/tools/mcp-catalog";
 
 function describeConfig(config: McpServerConfig): string {
   return config.transport === "stdio"
@@ -163,14 +167,27 @@ function McpServers() {
                     MCP servers give every session extra tools, such as a database, a browser or
                     documentation.
                   </p>
-                  <button type="button" class={styles.pillPrimary} onClick={() => setAdding(true)}>
-                    <Plus size={14} aria-hidden="true" />
-                    Add server
-                  </button>
+                  {/* The catalog is the primary: a browser-only user picks a
+                      server from a list; typing a transport by hand is the
+                      way in for one the registry does not list. */}
+                  <div class={styles.actions}>
+                    <A href={MCP_CATALOG} class={styles.pillPrimary}>
+                      <LibraryBig size={14} aria-hidden="true" />
+                      Add from catalog
+                    </A>
+                    <button type="button" class={styles.pill} onClick={() => setAdding(true)}>
+                      <Plus size={14} aria-hidden="true" />
+                      Add server
+                    </button>
+                  </div>
                 </div>
               }
             >
-              <div>
+              <div class={styles.actions}>
+                <A href={MCP_CATALOG} class={styles.pill}>
+                  <LibraryBig size={14} aria-hidden="true" />
+                  Add from catalog
+                </A>
                 <button type="button" class={styles.pill} onClick={() => setAdding(true)}>
                   <Plus size={14} aria-hidden="true" />
                   Add server

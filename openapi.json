@@ -536,6 +536,163 @@
         }
       }
     },
+    "/v1/catalog/mcp-servers": {
+      "get": {
+        "summary": "Lists one page of the catalog.",
+        "description": "Lists one page of the catalog.",
+        "operationId": "flyco_api::mcp_catalog::list_catalog_mcp_servers",
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Cursor from a previous page's `next_cursor`."
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Substring matched against the registry name. Omitted lists the\nregistry from its first page."
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One page of `GET /v1/catalog/mcp-servers`.",
+                  "required": [
+                    "servers"
+                  ],
+                  "properties": {
+                    "next_cursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Cursor for the next page, absent on the last."
+                    },
+                    "servers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CatalogMcpServer"
+                      },
+                      "description": "The servers on this page that flyco can run."
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Registers a catalog server with the user's answers filled in.",
+        "description": "Registers a catalog server with the user's answers filled in.",
+        "operationId": "flyco_api::mcp_catalog::install_catalog_mcp_server",
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `POST /v1/catalog/mcp-servers`.",
+                "required": [
+                  "server",
+                  "kind"
+                ],
+                "properties": {
+                  "kind": {
+                    "$ref": "#/components/schemas/CatalogInstallKind",
+                    "description": "Which of its installs to register."
+                  },
+                  "name": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "The name to register it under. Omitted uses the catalog's\nsuggestion."
+                  },
+                  "server": {
+                    "type": "string",
+                    "description": "The registry name of the server, as the catalog listed it."
+                  },
+                  "values": {
+                    "type": "object",
+                    "description": "The inputs the install asked for, by key.",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "propertyNames": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The resource that was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "description": "One row of `GET /v1/mcp-servers`.",
+                  "required": [
+                    "id",
+                    "name",
+                    "config",
+                    "enabled",
+                    "updated_at_unix"
+                  ],
+                  "properties": {
+                    "config": {
+                      "$ref": "#/components/schemas/McpServerConfig",
+                      "description": "How to reach it."
+                    },
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Whether sessions are given it."
+                    },
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Name the harness announces it under."
+                    },
+                    "updated_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Last change, seconds since the Unix epoch.",
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/cli-sessions": {
       "post": {
         "summary": "`POST /v1/cli-sessions` — opens a sign-in attempt.",
@@ -8976,6 +9133,140 @@
           }
         }
       },
+      "CatalogInput": {
+        "type": "object",
+        "description": "A value the user supplies before a catalog server can be added: an\nauthorization header, an environment variable, a command-line argument.",
+        "required": [
+          "key",
+          "label",
+          "required",
+          "secret"
+        ],
+        "properties": {
+          "default": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What the field starts out as, when the registry names a default."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The registry's explanation of the value, when it gave one."
+          },
+          "key": {
+            "type": "string",
+            "description": "What the value is filed under in\n[`InstallCatalogMcpServer::values`]: `header:<name>`, `env:<NAME>`,\n`arg:<name>` or `var:<variable>`."
+          },
+          "label": {
+            "type": "string",
+            "description": "The name shown beside the field."
+          },
+          "required": {
+            "type": "boolean",
+            "description": "Whether the server cannot be added without it."
+          },
+          "secret": {
+            "type": "boolean",
+            "description": "Whether the field should hide what is typed."
+          }
+        }
+      },
+      "CatalogInstallKind": {
+        "type": "string",
+        "description": "How a catalog server would run once added.\n\nThe registry also lists Docker images, `NuGet` packages and `.mcpb`\nbundles; none of those runs on a session machine, so an entry offering\nonly those is not in the catalog at all.",
+        "enum": [
+          "remote",
+          "npm",
+          "pypi"
+        ]
+      },
+      "CatalogMcpInstall": {
+        "type": "object",
+        "description": "One way of running a catalog server, and what it needs from the user.",
+        "required": [
+          "kind",
+          "label",
+          "inputs"
+        ],
+        "properties": {
+          "inputs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogInput"
+            },
+            "description": "What the user fills in first. Empty when one click is enough."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CatalogInstallKind",
+            "description": "How it runs."
+          },
+          "label": {
+            "type": "string",
+            "description": "A line naming the endpoint or the package: `Remote · mcp.example`,\n`npx @acme/mcp`."
+          }
+        }
+      },
+      "CatalogMcpServer": {
+        "type": "object",
+        "description": "One server of `GET /v1/catalog/mcp-servers`.",
+        "required": [
+          "name",
+          "description",
+          "version",
+          "suggested_name",
+          "installs"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "The publisher's one-line description."
+          },
+          "installs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogMcpInstall"
+            },
+            "description": "Every way flyco can run it, most preferred first."
+          },
+          "name": {
+            "type": "string",
+            "description": "The registry's reverse-DNS name, `io.github.owner/server`."
+          },
+          "repository_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the source lives, when the publisher said."
+          },
+          "suggested_name": {
+            "type": "string",
+            "description": "The name the server is registered under unless the user picks\nanother: the tail of the registry name, in the characters a harness\ncan announce a server as."
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The display name, when the publisher gave one."
+          },
+          "version": {
+            "type": "string",
+            "description": "The version the registry lists as latest."
+          },
+          "website_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The publisher's site, when they named one."
+          }
+        }
+      },
       "CheckoutPath": {
         "type": "object",
         "description": "Query of the two `Files` routes.",
@@ -11719,6 +12010,41 @@
           }
         }
       },
+      "InstallCatalogMcpServer": {
+        "type": "object",
+        "description": "Request body of `POST /v1/catalog/mcp-servers`.",
+        "required": [
+          "server",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/CatalogInstallKind",
+            "description": "Which of its installs to register."
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The name to register it under. Omitted uses the catalog's\nsuggestion."
+          },
+          "server": {
+            "type": "string",
+            "description": "The registry name of the server, as the catalog listed it."
+          },
+          "values": {
+            "type": "object",
+            "description": "The inputs the install asked for, by key.",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        }
+      },
       "InterruptedReason": {
         "type": "string",
         "description": "Why a session lost the machine it was running on.\n\nRecorded beside [`SessionState::Interrupted`] rather than folded into\nit, because the state says the session is off its compute and this says\nwhat the user is looking at: `Interrupted · spot reclaimed` is a status\nflyco is already recovering from, and a status with no reason would read\nas a session somebody has to rescue by hand (docs/ux.md §6).\n\nKept while flyco puts the session back — the recovery runs through\n[`SessionState::Provisioning`], and the reason is what tells that\nprovisioning apart from a first one, which is the whole of `Migrating` —\nand cleared when the session's daemon reaches the control plane again.",
@@ -12334,6 +12660,49 @@
                 "description": "Persistent-disk price actually being billed per hour."
               }
             ]
+          }
+        }
+      },
+      "McpCatalogPage": {
+        "type": "object",
+        "description": "One page of `GET /v1/catalog/mcp-servers`.",
+        "required": [
+          "servers"
+        ],
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, absent on the last."
+          },
+          "servers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CatalogMcpServer"
+            },
+            "description": "The servers on this page that flyco can run."
+          }
+        }
+      },
+      "McpCatalogQuery": {
+        "type": "object",
+        "description": "What the picker asks for.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor from a previous page's `next_cursor`."
+          },
+          "search": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Substring matched against the registry name. Omitted lists the\nregistry from its first page."
           }
         }
       },

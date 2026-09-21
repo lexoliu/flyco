@@ -19,6 +19,7 @@ import SettingsLayout from "../routes/settings/SettingsLayout";
 import AgentsSection from "../routes/settings/AgentsSection";
 import ComputeSection from "../routes/settings/ComputeSection";
 import ToolsSection from "../routes/settings/ToolsSection";
+import McpCatalog from "../routes/settings/McpCatalog";
 import InstructionsSection from "../routes/settings/InstructionsSection";
 import AccountSection from "../routes/settings/AccountSection";
 import NotFound from "../routes/NotFound";
@@ -68,6 +69,7 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
         <Route path="/agents" component={AgentsSection} />
         <Route path="/compute" component={ComputeSection} />
         <Route path="/tools" component={ToolsSection} />
+        <Route path="/tools/mcp-catalog" component={McpCatalog} />
         <Route path="/instructions" component={InstructionsSection} />
         <Route path="/account" component={AccountSection} />
       </Route>
@@ -1079,6 +1081,17 @@ describe("route smoke tests", () => {
     expect(
       getByRole("group", { name: "Which harness gets the skill" }),
     ).toBeInTheDocument();
+  });
+
+  it("renders /settings/tools/mcp-catalog with the registry's servers", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/tools/mcp-catalog");
+    expect(
+      await findByRole("heading", { level: 2, name: "Add an MCP server" }),
+    ).toBeInTheDocument();
+    expect(getByRole("searchbox", { name: "Search the registry" })).toBeInTheDocument();
+    expect(await findByRole("button", { name: /DeepWiki/ })).toBeInTheDocument();
+    // One way back, above the title, and no primary until a server is chosen.
+    expect(getByRole("link", { name: "Back to Tools" })).toHaveAttribute("href", "/settings/tools");
   });
 
   it("renders /settings/instructions with the AGENTS.md editor", async () => {
