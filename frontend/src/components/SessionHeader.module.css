@@ -307,6 +307,31 @@
   cursor: not-allowed;
 }
 
+/* The holds under `Keep machine awake`, indented to the row's text so
+   they read as its answers rather than as items of their own. */
+.holds {
+  display: flex;
+  gap: var(--space-1);
+  padding: 0 var(--space-2) var(--space-1) calc(var(--space-2) + 14px + var(--space-2));
+}
+
+.hold {
+  flex: 1;
+  min-height: 26px;
+  padding: 0 var(--space-2);
+  border: var(--border-width) solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  cursor: pointer;
+}
+
+.hold:hover {
+  border-color: var(--color-border-strong);
+  color: var(--color-text);
+}
+
 /* The session's own actions above the line, the machine's below it. */
 .menuDivider {
   height: var(--border-width);

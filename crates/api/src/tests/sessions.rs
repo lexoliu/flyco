@@ -1101,6 +1101,164 @@ async fn an_idle_sessions_machine_is_suspended_with_its_disk_kept(_ctx: TestCont
     );
 }
 
+#[skyzen::test]
+async fn a_machine_held_awake_survives_the_sweep_until_the_hold_runs_out(
+    _ctx: TestContext,
+    db: Db,
+) {
+    // The sweep cannot see a build, a soak test or a watch loop: the
+    // session is idle because the work is the machine's, not the user's.
+    // The hold is the only evidence there is, and it expires on its own so
+    // a machine is never awake because somebody forgot it.
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    idle(&db, session).await;
+
+    let held = sessions::keep_awake(&db, user.id, session, Some(60))
+        .await
+        .expect("hold the machine awake");
+    assert!(
+        held.summary
+            .awake_until_unix
+            .is_some_and(|until| until > crate::clock::now_unix()),
+        "the hold is an instant, not a flag: {:?}",
+        held.summary.awake_until_unix
+    );
+
+    let config = testing::test_config();
+    app::suspend_idle(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Active,
+        "a held machine is left alone"
+    );
+
+    // An hour later the hold is over and the machine is the sweep's again.
+    app::suspend_idle(
+        &db,
+        &config,
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix() + 61 * 60,
+    )
+    .await
+    .expect("the sweep runs after the hold");
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Interrupted
+    );
+}
+
+#[skyzen::test]
+async fn a_hold_that_has_run_out_is_not_reported_as_one(_ctx: TestContext, db: Db) {
+    // Cleared where it is read rather than swept: a row still carrying
+    // yesterday's instant would put "kept awake" in the menu of a machine
+    // the sweep is already free to stop.
+    testing::migrate(&db).await;
+    let user = seed_user(&db).await;
+    let session = testing::seed_session(&db, &user).await;
+    let past = crate::clock::now_unix() - 1;
+    sql!(
+        db,
+        "UPDATE sessions SET awake_until_unix = {past} WHERE id = {session}"
+    )
+    .execute()
+    .await
+    .expect("write a hold that has passed");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .awake_until_unix,
+        None
+    );
+}
+
+#[skyzen::test]
+async fn ending_the_hold_gives_the_machine_back_to_the_sweep(_ctx: TestContext, db: Db) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    idle(&db, session).await;
+    sessions::keep_awake(&db, user.id, session, Some(60))
+        .await
+        .expect("hold the machine awake");
+
+    let released = sessions::keep_awake(&db, user.id, session, None)
+        .await
+        .expect("end the hold");
+    assert_eq!(released.summary.awake_until_unix, None);
+
+    app::suspend_idle(
+        &db,
+        &testing::test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Interrupted
+    );
+}
+
+#[skyzen::test]
+async fn a_hold_longer_than_a_working_day_is_refused(_ctx: TestContext, db: Db) {
+    testing::migrate(&db).await;
+    let user = seed_user(&db).await;
+    let session = testing::seed_session(&db, &user).await;
+
+    let refused = sessions::keep_awake(
+        &db,
+        user.id,
+        session,
+        Some(flyco_core::KEEP_AWAKE_MAX_MINUTES + 1),
+    )
+    .await
+    .expect_err("a hold past the maximum");
+    assert_eq!(
+        refused.problem().kind,
+        "https://flyco.dev/problems/keep-awake-too-long"
+    );
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .awake_until_unix,
+        None,
+        "a refused hold writes nothing"
+    );
+}
+
 /// Backdates a pending approval so it has waited as long as the idle
 /// threshold: the blocked turn's own clock (issue #355).
 async fn waiting_since_the_cutoff(db: &Db, approval: ApprovalId) {

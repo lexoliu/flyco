@@ -8,13 +8,13 @@ use flyco_core::{
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, DesktopInputRequest,
     DesktopTakeoverRequest, EnvDocument, HarnessFeature, HarnessObservation, HarnessSessionView,
-    HarnessTui, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin,
-    MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RegionLocation, RepoAddedBy,
-    RepoSelection, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ResizeMachine, RunShell, SendMessage, SessionActivity,
-    SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary, SkillId, SkillMount,
-    TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit,
-    UserId,
+    HarnessTui, InterruptedReason, KeepAwake, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry,
+    MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RegionLocation,
+    RepoAddedBy, RepoSelection, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage,
+    ReportSpotNotice, ReportStartupFailure, ReportStopping, ResizeMachine, RunShell, SendMessage,
+    SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary, SkillId,
+    SkillMount, TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession,
+    UsageLimitHit, UserId,
     wire::{ApprovalPayload, DaemonAttach, DaemonAttached, DaemonFrames},
 };
 use flyco_provider::host::{HostAttach, HostFrames};
@@ -774,6 +774,36 @@ struct ArchiveQuery {
     /// uncommitted work.
     #[serde(default)]
     discard_uncommitted: bool,
+}
+
+/// Holds a session's machine awake, or gives it back to the idle sweep.
+///
+/// The sweep stops a machine that has been idle for
+/// [`SUSPEND_AFTER_IDLE_SECS`](flyco_core::SUSPEND_AFTER_IDLE_SECS)
+/// because compute bills by the minute. It cannot see a build, a soak test
+/// or a watch loop — the session looks idle because nobody is typing — so
+/// this is how the user says one is running. The hold expires on its own:
+/// a machine kept awake for ever is a bill nobody chose.
+#[skyzen::openapi]
+async fn keep_session_awake(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(request): Json<KeepAwake>,
+    db: Db,
+) -> Outcome<Json<SessionDetail>> {
+    hold_awake(&user, &params, request, &db).await.into()
+}
+
+async fn hold_awake(
+    user: &CurrentUser,
+    params: &Params,
+    request: KeepAwake,
+    db: &Db,
+) -> Result<Json<SessionDetail>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::keep_awake(db, user.id, id, request.minutes)
+        .await
+        .map(Json)
 }
 
 /// Archives a session, releasing its execution environment for good.
@@ -3686,6 +3716,7 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions".post(create_session).get(list_sessions),
         "/v1/sessions/{id}".at(get_session).patch(update_session),
         "/v1/sessions/{id}/archive".post(archive_session),
+        "/v1/sessions/{id}/awake".put(keep_session_awake),
         "/v1/sessions/{id}/budget".at(get_session_budget),
         "/v1/sessions/{id}/daemon-token".post(create_daemon_token),
         "/v1/sessions/{id}/events".at(get_session_events),

@@ -5078,6 +5078,15 @@
                         "$ref": "#/components/schemas/SessionActivity",
                         "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
                       },
+                      "awake_until_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "Until when the idle sweep must leave this session's machine alone,\nseconds since the Unix epoch.\n\n`None` for a session on the ordinary clock, which is almost all of\nthem. A machine is stopped after\n[`SUSPEND_AFTER_IDLE_SECS`] because compute bills by the minute,\nand that is wrong exactly when the agent is doing something the\ncontrol plane cannot see it doing — a long build, a soak test, a\nwatch loop — so the user holds the machine open for a while. An\ninstant rather than a flag: a machine held awake for ever is a bill\nnobody chose, and the hold has to expire on its own.",
+                        "minimum": 0
+                      },
                       "computer_use": {
                         "type": "boolean",
                         "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open. Every session created today carries it — the\nstack ships in the image and is not a choice at create — but rows\nfrom before that change record 0, and a live session can still\ntoggle it through [`UpdateSession::computer_use`]."
@@ -6030,6 +6039,94 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        },
+                        "failure": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/awake": {
+      "put": {
+        "summary": "Holds a session's machine awake, or gives it back to the idle sweep.",
+        "description": "Holds a session's machine awake, or gives it back to the idle sweep.\n\nThe sweep stops a machine that has been idle for\n[`SUSPEND_AFTER_IDLE_SECS`](flyco_core::SUSPEND_AFTER_IDLE_SECS)\nbecause compute bills by the minute. It cannot see a build, a soak test\nor a watch loop — the session looks idle because nobody is typing — so\nthis is how the user says one is running. The hold expires on its own:\na machine kept awake for ever is a bill nobody chose.",
+        "operationId": "flyco_api::app::keep_session_awake",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `PUT /v1/sessions/{id}/awake`.\n\nA route of its own rather than a field on [`UpdateSession`]: this is\nnot a property of the session the user is editing, it is an instruction\nto the idle sweep with a clock attached, and the two are asked for from\ndifferent places and answered at different times.",
+                "properties": {
+                  "minutes": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int32",
+                    "description": "How much longer the machine must not be suspended for idleness, in\nminutes, up to [`KEEP_AWAKE_MAX_MINUTES`].\n\n`None` ends the hold and gives the machine back to the sweep.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Response",
@@ -12537,6 +12634,21 @@
         ],
         "description": "What came of one container job on a host.\n\nA sum rather than a status and a nullable pair, because \"the container\nis up and here is what it is called\" and \"podman refused\" are different\nanswers and only one of them names a container."
       },
+      "KeepAwake": {
+        "type": "object",
+        "description": "Request body of `PUT /v1/sessions/{id}/awake`.\n\nA route of its own rather than a field on [`UpdateSession`]: this is\nnot a property of the session the user is editing, it is an instruction\nto the idle sweep with a clock attached, and the two are asked for from\ndifferent places and answered at different times.",
+        "properties": {
+          "minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How much longer the machine must not be suspended for idleness, in\nminutes, up to [`KEEP_AWAKE_MAX_MINUTES`].\n\n`None` ends the hold and gives the machine back to the sweep.",
+            "minimum": 0
+          }
+        }
+      },
       "LinkHarnessAccount": {
         "type": "object",
         "description": "Request to link a Claude Code, Codex, or Devin account.",
@@ -14589,6 +14701,15 @@
           "activity": {
             "$ref": "#/components/schemas/SessionActivity",
             "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
+          },
+          "awake_until_unix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Until when the idle sweep must leave this session's machine alone,\nseconds since the Unix epoch.\n\n`None` for a session on the ordinary clock, which is almost all of\nthem. A machine is stopped after\n[`SUSPEND_AFTER_IDLE_SECS`] because compute bills by the minute,\nand that is wrong exactly when the agent is doing something the\ncontrol plane cannot see it doing — a long build, a soak test, a\nwatch loop — so the user holds the machine open for a while. An\ninstant rather than a flag: a machine held awake for ever is a bill\nnobody chose, and the hold has to expire on its own.",
+            "minimum": 0
           },
           "computer_use": {
             "type": "boolean",

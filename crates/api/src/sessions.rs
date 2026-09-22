@@ -7,10 +7,11 @@
 
 use flyco_core::{
     ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
-    ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, MAX_SESSION_TITLE_CHARS,
-    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, PermissionMode, RepoAddedBy,
-    RepoSlug, SUSPEND_AFTER_IDLE_SECS, SessionActivity, SessionDetail, SessionId, SessionRepo,
-    SessionState, SessionSummary, UsageLimitPause, Usd, UserId, builtin_models,
+    ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, KEEP_AWAKE_MAX_MINUTES,
+    MAX_SESSION_TITLE_CHARS, MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason,
+    PermissionMode, RepoAddedBy, RepoSlug, SUSPEND_AFTER_IDLE_SECS, SessionActivity, SessionDetail,
+    SessionId, SessionRepo, SessionState, SessionSummary, UsageLimitPause, Usd, UserId,
+    builtin_models,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -87,6 +88,10 @@ struct SessionRow {
     /// that predates the column was a session without a screen, which is
     /// what the default already says.
     computer_use: bool,
+    /// Until when the idle sweep must leave this session's machine alone.
+    ///
+    /// `NULL` for the ordinary clock; see migration 0037.
+    awake_until_unix: Option<u64>,
 }
 
 /// The choice a stored row names, resolving a legacy `NULL` model.
@@ -147,6 +152,13 @@ impl SessionRow {
             model: model_of(self.harness, self.model, self.effort),
             permission_mode: mode_of(self.permission_mode),
             computer_use: self.computer_use,
+            // A hold that has run out is no hold at all, and a row that
+            // still carries yesterday's instant would put "kept awake" in
+            // the menu of a machine the sweep is free to stop. The column
+            // is cleared where it is read rather than swept.
+            awake_until_unix: self
+                .awake_until_unix
+                .filter(|until| *until > crate::clock::now_unix()),
         })
     }
 }
@@ -472,6 +484,49 @@ pub async fn set_mode(
     find(db, user, id).await
 }
 
+/// Holds one of the caller's sessions awake, or lets the idle sweep have
+/// it back.
+///
+/// `minutes` is how much longer the machine must not be stopped for
+/// idleness; `None` ends the hold now. The instant is computed here rather
+/// than sent by the browser, so a hold is as long as it was asked for
+/// whatever the clock on the asking machine says.
+///
+/// # Errors
+///
+/// Returns [`ApiError::SessionNotFound`] if the session is not the
+/// caller's, [`ApiError::KeepAwakeTooLong`] if the hold is longer than
+/// [`KEEP_AWAKE_MAX_MINUTES`], or [`ApiError`] if the database fails.
+pub async fn keep_awake(
+    db: &Db,
+    user: UserId,
+    id: SessionId,
+    minutes: Option<u32>,
+) -> Result<SessionDetail, ApiError> {
+    // The row is loaded first so a session that is not the caller's is a
+    // 404 rather than an UPDATE that quietly writes nothing.
+    load(db, user, id).await?;
+
+    let until = match minutes {
+        Some(minutes) if minutes > KEEP_AWAKE_MAX_MINUTES => {
+            return Err(ApiError::KeepAwakeTooLong {
+                maximum_minutes: KEEP_AWAKE_MAX_MINUTES,
+            });
+        }
+        Some(minutes) => Some(now_unix().saturating_add(u64::from(minutes) * 60)),
+        None => None,
+    };
+    sql!(
+        db,
+        "UPDATE sessions SET awake_until_unix = {until} WHERE id = {id}"
+    )
+    .execute()
+    .await?;
+    tracing::info!(session = %id, ?until, "the machine is held awake");
+
+    find(db, user, id).await
+}
+
 /// Gives one of the caller's sessions a screen, or takes it away.
 ///
 /// The durable half alone, on the same terms as [`set_mode`]: the running
@@ -580,7 +635,7 @@ pub async fn list(db: &Db, user: UserId) -> Result<Vec<SessionSummary>, ApiError
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
          s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode, \
-         s.computer_use \
+         s.computer_use, s.awake_until_unix \
          FROM sessions s WHERE s.user_id = ? \
          ORDER BY s.created_at_unix DESC, s.id DESC"
     );
@@ -695,7 +750,7 @@ async fn load(db: &Db, user: UserId, id: SessionId) -> Result<SessionRow, ApiErr
          s.paused_reason, s.usage_limit_window, s.usage_limit_resets_at_unix, \
          s.usage_limit_resume_at_unix, s.usage_limit_queued_message, \
          s.created_at_unix, s.last_active_unix, s.model, s.effort, s.permission_mode, \
-         s.computer_use \
+         s.computer_use, s.awake_until_unix \
          FROM sessions s WHERE s.id = ? AND s.user_id = ?"
     );
     db.query(&statement)
@@ -1527,6 +1582,11 @@ pub async fn idle_since(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiEr
 /// approval's own age rather than the turn's, so a long turn that only
 /// just asked keeps its machine.
 ///
+/// A session the user is holding awake is left alone until the hold runs
+/// out, whatever the idleness says: the sweep cannot see a build, a soak
+/// test or a watch loop, and the user asking for the machine to stay is
+/// the only evidence there is that one is running.
+///
 /// The machine join admits `deallocated` as well as `running`: a machine
 /// already off needs no provider call, but the session write that goes
 /// with the stop is still owed — either a previous pass was cut short
@@ -1554,6 +1614,8 @@ pub async fn suspendable(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiE
                          WHERE approvals.session_id = sessions.id \
                          AND approvals.state = {pending} \
                          AND approvals.created_at_unix <= {cutoff})) \
+         AND (sessions.awake_until_unix IS NULL \
+              OR sessions.awake_until_unix <= {at_unix}) \
          AND (machines.state = {running} OR machines.state = {deallocated})"
     )
     .fetch_all()

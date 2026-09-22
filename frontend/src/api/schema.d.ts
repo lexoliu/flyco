@@ -1736,6 +1736,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sessions/{id}/awake": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Holds a session's machine awake, or gives it back to the idle sweep.
+         * @description Holds a session's machine awake, or gives it back to the idle sweep.
+         *
+         *     The sweep stops a machine that has been idle for
+         *     [`SUSPEND_AFTER_IDLE_SECS`](flyco_core::SUSPEND_AFTER_IDLE_SECS)
+         *     because compute bills by the minute. It cannot see a build, a soak test
+         *     or a watch loop — the session looks idle because nobody is typing — so
+         *     this is how the user says one is running. The hold expires on its own:
+         *     a machine kept awake for ever is a bill nobody chose.
+         */
+        put: operations["flyco_api::app::keep_session_awake"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/sessions/{id}/budget": {
         parameters: {
             query?: never;
@@ -5029,6 +5056,24 @@ export interface components {
             /** @enum {string} */
             outcome: "failed";
         };
+        /**
+         * @description Request body of `PUT /v1/sessions/{id}/awake`.
+         *
+         *     A route of its own rather than a field on [`UpdateSession`]: this is
+         *     not a property of the session the user is editing, it is an instruction
+         *     to the idle sweep with a clock attached, and the two are asked for from
+         *     different places and answered at different times.
+         */
+        KeepAwake: {
+            /**
+             * Format: int32
+             * @description How much longer the machine must not be suspended for idleness, in
+             *     minutes, up to [`KEEP_AWAKE_MAX_MINUTES`].
+             *
+             *     `None` ends the hold and gives the machine back to the sweep.
+             */
+            minutes?: number | null;
+        };
         /** @description Request to link a Claude Code, Codex, or Devin account. */
         LinkHarnessAccount: {
             /** @description Authentication material, tagged with the mode that consumes it. */
@@ -6391,6 +6436,21 @@ export interface components {
              *     archived rather than being reset to a position it was never in.
              */
             activity: components["schemas"]["SessionActivity"];
+            /**
+             * Format: int64
+             * @description Until when the idle sweep must leave this session's machine alone,
+             *     seconds since the Unix epoch.
+             *
+             *     `None` for a session on the ordinary clock, which is almost all of
+             *     them. A machine is stopped after
+             *     [`SUSPEND_AFTER_IDLE_SECS`] because compute bills by the minute,
+             *     and that is wrong exactly when the agent is doing something the
+             *     control plane cannot see it doing — a long build, a soak test, a
+             *     watch loop — so the user holds the machine open for a while. An
+             *     instant rather than a flag: a machine held awake for ever is a bill
+             *     nobody chose, and the hold has to expire on its own.
+             */
+            awake_until_unix?: number | null;
             /**
              * @description Whether the session may have a desktop.
              *
@@ -10154,6 +10214,21 @@ export interface operations {
                          */
                         activity: components["schemas"]["SessionActivity"];
                         /**
+                         * Format: int64
+                         * @description Until when the idle sweep must leave this session's machine alone,
+                         *     seconds since the Unix epoch.
+                         *
+                         *     `None` for a session on the ordinary clock, which is almost all of
+                         *     them. A machine is stopped after
+                         *     [`SUSPEND_AFTER_IDLE_SECS`] because compute bills by the minute,
+                         *     and that is wrong exactly when the agent is doing something the
+                         *     control plane cannot see it doing — a long build, a soak test, a
+                         *     watch loop — so the user holds the machine open for a while. An
+                         *     instant rather than a flag: a machine held awake for ever is a bill
+                         *     nobody chose, and the hold has to expire on its own.
+                         */
+                        awake_until_unix?: number | null;
+                        /**
                          * @description Whether the session may have a desktop.
                          *
                          *     On the summary rather than only on [`SessionDetail`] because the
@@ -10639,6 +10714,55 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            /** @description Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionSummary"] & {
+                        /** @description Budget accounting as of this request. */
+                        budget: components["schemas"]["BudgetView"];
+                        /**
+                         * @description Why the session is [`SessionState::Failed`], in the provider's own
+                         *     words where it has any.
+                         *
+                         *     `None` for every other state. A failed session that could not say
+                         *     why would leave the user with a dead session and no idea whether to
+                         *     retry it, pick another region, or ask for a quota increase.
+                         */
+                        failure?: string | null;
+                        usage_limit?: null | components["schemas"]["UsageLimitPause"];
+                    };
+                };
+            };
+        };
+    };
+    "flyco_api::app::keep_session_awake": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        /** @description Extractor arguments */
+        requestBody: {
+            content: {
+                "application/json": {
+                    /**
+                     * Format: int32
+                     * @description How much longer the machine must not be suspended for idleness, in
+                     *     minutes, up to [`KEEP_AWAKE_MAX_MINUTES`].
+                     *
+                     *     `None` ends the hold and gives the machine back to the sweep.
+                     */
+                    minutes?: number | null;
+                };
+            };
+        };
         responses: {
             /** @description Response */
             200: {

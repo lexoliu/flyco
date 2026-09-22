@@ -34,6 +34,7 @@ function mount(overrides: Partial<SessionHeaderProps>) {
     archiving: false,
     onStartMachine: vi.fn(),
     onStopMachine: vi.fn(),
+    onKeepAwake: vi.fn(),
     drawerOpen: false,
     onToggleDrawer: vi.fn(),
     onOpenPanel: vi.fn(),
@@ -43,6 +44,34 @@ function mount(overrides: Partial<SessionHeaderProps>) {
 }
 
 describe("SessionHeader", () => {
+  it("holds the machine awake for the time the menu was asked for", () => {
+    const onKeepAwake = vi.fn();
+    const { getByRole } = mount({ session: SESSION, onKeepAwake });
+
+    getByRole("button", { name: "Session actions" }).click();
+    getByRole("button", { name: "Keep machine awake" }).click();
+    getByRole("button", { name: "4h" }).click();
+
+    expect(onKeepAwake).toHaveBeenCalledWith(240);
+  });
+
+  it("counts down a hold that is running, and the same row ends it", () => {
+    const onKeepAwake = vi.fn();
+    const { getByRole, getByText } = mount({
+      session: {
+        ...SESSION,
+        awake_until_unix: Math.floor(Date.now() / 1000) + 2 * 3600 + 15 * 60,
+      },
+      onKeepAwake,
+    });
+
+    getByRole("button", { name: "Session actions" }).click();
+    expect(getByText("Awake for 2h 15m")).toBeInTheDocument();
+
+    getByRole("button", { name: "Off" }).click();
+    expect(onKeepAwake).toHaveBeenCalledWith(null);
+  });
+
   it("holds the title's place while the session loads, without showing the id", () => {
     const { getByLabelText, queryByText } = mount({});
 

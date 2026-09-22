@@ -59,6 +59,7 @@ import {
   decideApproval,
   getSession,
   getSessionMachine,
+  keepSessionAwake,
   resumeSession,
   startSessionMachine,
   stopSessionMachine,
@@ -871,6 +872,23 @@ function SessionView(props: { id: string }) {
     }
   }
 
+  /**
+   * Holds the machine awake, or gives it back to the idle sweep.
+   *
+   * The answer is the whole session, so the menu's row reads the hold the
+   * control plane actually recorded rather than the one the click asked
+   * for — the two differ by however long the round trip took, and the row
+   * counts down from the answer.
+   */
+  async function onKeepAwake(minutes: number | null): Promise<void> {
+    setError(null);
+    try {
+      mutateSession(await keepSessionAwake(props.id, minutes));
+    } catch (failure) {
+      setError(failure);
+    }
+  }
+
   async function onMachine(action: "start" | "stop"): Promise<void> {
     setError(null);
     try {
@@ -933,6 +951,7 @@ function SessionView(props: { id: string }) {
         archiving={archiving()}
         onStartMachine={() => void onMachine("start")}
         onStopMachine={() => void onMachine("stop")}
+        onKeepAwake={(minutes) => void onKeepAwake(minutes)}
         drawerOpen={drawerOpen()}
         onToggleDrawer={() => setDrawerOpen((was) => !was)}
         onOpenPanel={requestPanel}

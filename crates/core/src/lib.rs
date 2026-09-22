@@ -106,12 +106,12 @@ pub use repo::{
 pub use session::{
     ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, DesktopInputRequest,
     DesktopTakeoverRequest, HarnessSessionView, HarnessTui, InterruptedReason,
-    MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
-    PROVISION_DEADLINE_SECS, PausedReason, RunShell, SUSPEND_AFTER_IDLE_SECS, SendMessage,
-    SessionActivity, SessionDetail, SessionState, SessionSummary, SessionTransitionError,
-    TerminalInput, TerminalSize, TurnPage, TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE,
-    USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause,
-    excerpt,
+    KEEP_AWAKE_MAX_MINUTES, KeepAwake, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin,
+    PROMPT_EXCERPT_CHARS, PROVISION_DEADLINE_SECS, PausedReason, RunShell, SUSPEND_AFTER_IDLE_SECS,
+    SendMessage, SessionActivity, SessionDetail, SessionState, SessionSummary,
+    SessionTransitionError, TerminalInput, TerminalSize, TurnPage, TurnSummary,
+    USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS,
+    UpdateSession, UsageLimitPause, excerpt,
 };
 pub use skill_catalog::{
     AddMarketplace, BUILT_IN_MARKETPLACE, CatalogSkill, InstallCatalogSkill, MarketplaceProblem,
