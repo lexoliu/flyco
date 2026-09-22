@@ -367,7 +367,12 @@ async fn run_queue_as(
         kv,
         queue,
         &test_rooms(),
-        &mut clients(provisioner, &github, &test_vendors(), &release_bucket().await),
+        &mut clients(
+            provisioner,
+            &github,
+            &test_vendors(),
+            &release_bucket().await,
+        ),
         batch,
     )
     .await
@@ -388,7 +393,12 @@ async fn run_queue_watching(
         kv,
         queue,
         rooms,
-        &mut clients(provisioner, &TestGithub::default(), &test_vendors(), &release_bucket().await),
+        &mut clients(
+            provisioner,
+            &TestGithub::default(),
+            &test_vendors(),
+            &release_bucket().await,
+        ),
         batch,
     )
     .await
@@ -453,7 +463,12 @@ async fn run_job_twice(
             kv,
             queue,
             &test_rooms(),
-            &mut clients(provisioner, &TestGithub::default(), &test_vendors(), &release_bucket().await),
+            &mut clients(
+                provisioner,
+                &TestGithub::default(),
+                &test_vendors(),
+                &release_bucket().await,
+            ),
             batch(job.clone()),
         )
         .await;
@@ -980,7 +995,12 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
             &kv,
             &queue,
             &test_rooms(),
-            &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
+            &mut clients(
+                &mut host,
+                &TestGithub::default(),
+                &test_vendors(),
+                &release_bucket().await,
+            ),
             batch(job),
         )
         .await;
@@ -1053,7 +1073,12 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &kv,
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
+        &mut clients(
+            &mut host,
+            &TestGithub::default(),
+            &test_vendors(),
+            &release_bucket().await,
+        ),
         original,
     )
     .await;
@@ -1093,7 +1118,12 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &kv,
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
+        &mut clients(
+            &mut host,
+            &TestGithub::default(),
+            &test_vendors(),
+            &release_bucket().await,
+        ),
         queued,
     )
     .await;
@@ -1182,7 +1212,12 @@ async fn a_job_for_a_session_that_is_gone_is_dropped(kv: Kv, db: Db, queue: Queu
         &kv,
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
+        &mut clients(
+            &mut host,
+            &TestGithub::default(),
+            &test_vendors(),
+            &release_bucket().await,
+        ),
         batch(orphan),
     )
     .await;
@@ -1871,12 +1906,7 @@ async fn a_machine_with_no_daemon_to_install_fails_before_it_is_built(
         &kv,
         &queue,
         &test_rooms(),
-        &mut clients(
-            &mut host,
-            &TestGithub::default(),
-            &test_vendors(),
-            &bucket,
-        ),
+        &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &bucket),
         batch(job),
     )
     .await;
@@ -1887,12 +1917,9 @@ async fn a_machine_with_no_daemon_to_install_fails_before_it_is_built(
     let detail = read(&client, &caller, session).await;
     assert_eq!(detail.summary.state, SessionState::Failed);
     assert!(
-        detail
-            .failure
-            .as_deref()
-            .is_some_and(|failure| {
-                failure.contains("wire protocol") && failure.contains("resume")
-            }),
+        detail.failure.as_deref().is_some_and(|failure| {
+            failure.contains("wire protocol") && failure.contains("resume")
+        }),
         "the sentence names what the machine could not get and what to do: {:?}",
         detail.failure
     );
