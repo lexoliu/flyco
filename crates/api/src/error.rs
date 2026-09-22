@@ -1236,9 +1236,12 @@ pub enum ApiError {
     /// A daemon speaks a wire protocol version this control plane does not.
     ///
     /// `409` rather than `426`: nothing here can be upgraded in place — the
-    /// daemon has to be replaced by a build that speaks this version.
+    /// daemon has to be replaced by a build that speaks this version. The
+    /// detail says the one thing that replaces it, because the two numbers
+    /// alone leave a browser user holding a dead session and no verb.
     #[error(
-        "the daemon speaks wire protocol {daemon}, this control plane speaks {control}",
+        "the daemon speaks wire protocol {daemon} but this control plane speaks {control}; \
+         resume the session so flyco builds it a machine on the daemon this control plane accepts",
         status = StatusCode::CONFLICT
     )]
     ProtocolMismatch {

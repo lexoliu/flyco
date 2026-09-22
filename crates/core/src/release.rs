@@ -7,6 +7,13 @@
 //! publisher cannot produce an object the control plane would refuse and the
 //! control plane cannot advertise one no publish writes.
 //!
+//! The objects carrying a daemon — the binaries and their checksums — are
+//! stored under `wire-<N>/` inside the channel, one prefix per wire protocol
+//! version ([`PublishedObject::storage_key`]). A control plane therefore
+//! serves exactly the build speaking the protocol it speaks, and a publish
+//! of one protocol never overwrites what another deployment still hands
+//! out.
+//!
 //! Nothing here says how an object is *built* — the target triples, the glibc
 //! pin and the staging directory are the publisher's business and live in
 //! `crates/xtask`.
@@ -24,6 +31,35 @@ pub struct PublishedObject {
     /// bucket object whose stored type drifted would otherwise change how a
     /// machine treats a binary it is about to execute.
     pub content_type: &'static str,
+    /// Whether the object is stored under the wire protocol version its
+    /// daemon speaks, `wire-<N>/` inside the channel prefix.
+    ///
+    /// True of the objects carrying a daemon — the binaries and the
+    /// checksums attesting them: a control plane serves `/install/` names
+    /// from the keys its own [`crate::WIRE_PROTOCOL_VERSION`] names, so a
+    /// machine is handed exactly the daemon this control plane accepts at
+    /// attach, and a protocol that was never published answers `404` rather
+    /// than an older daemon every attach would refuse (issue #382). False
+    /// of the assets, which carry no protocol and stay current with the
+    /// channel.
+    pub versioned: bool,
+}
+
+impl PublishedObject {
+    /// The object's key below `releases/<channel>/`.
+    ///
+    /// A versioned object's key is prefixed by the wire protocol version the
+    /// daemon it carries speaks, so one channel holds the daemon of every
+    /// protocol it ever shipped and each control plane serves only its own.
+    /// Every other object keys on its name, the way it always has.
+    #[must_use]
+    pub fn storage_key(&self) -> String {
+        if self.versioned {
+            format!("wire-{}/{}", crate::WIRE_PROTOCOL_VERSION, self.name)
+        } else {
+            self.name.to_owned()
+        }
+    }
 }
 
 /// Media type of an executable the installer downloads and runs.
@@ -100,10 +136,12 @@ pub const X86_64: PublishedBinary = PublishedBinary {
     binary: PublishedObject {
         name: "flycod-linux-x86_64",
         content_type: EXECUTABLE,
+        versioned: true,
     },
     checksum: PublishedObject {
         name: "flycod-linux-x86_64.sha256",
         content_type: TEXT,
+        versioned: true,
     },
 };
 
@@ -113,10 +151,12 @@ pub const AARCH64: PublishedBinary = PublishedBinary {
     binary: PublishedObject {
         name: "flycod-linux-aarch64",
         content_type: EXECUTABLE,
+        versioned: true,
     },
     checksum: PublishedObject {
         name: "flycod-linux-aarch64.sha256",
         content_type: TEXT,
+        versioned: true,
     },
 };
 
@@ -134,6 +174,7 @@ pub const BINARIES: [PublishedBinary; BINARY_COUNT] = [X86_64, AARCH64];
 pub const UNIT: PublishedObject = PublishedObject {
     name: "flycod.service",
     content_type: TEXT,
+    versioned: false,
 };
 
 /// The systemd unit that runs `flycod host` on a machine the user owns.
@@ -147,6 +188,7 @@ pub const UNIT: PublishedObject = PublishedObject {
 pub const HOST_UNIT: PublishedObject = PublishedObject {
     name: "flycod-host.service",
     content_type: TEXT,
+    versioned: false,
 };
 
 /// The machine installer, which cloud-init fetches and runs as root.
@@ -156,6 +198,7 @@ pub const HOST_UNIT: PublishedObject = PublishedObject {
 pub const INSTALLER: PublishedObject = PublishedObject {
     name: "flycod.sh",
     content_type: "text/x-shellscript; charset=utf-8",
+    versioned: false,
 };
 
 /// Number of objects a release copies verbatim out of the repository.
@@ -199,7 +242,7 @@ pub fn object(name: &str) -> Option<PublishedObject> {
 mod tests {
     use super::{
         ASSETS, BINARIES, HOST_UNIT, INSTALLER, OBJECT_COUNT, OBJECTS, SESSION_IMAGE,
-        SESSION_IMAGE_LATEST, object, session_image_for_wire_protocol,
+        SESSION_IMAGE_LATEST, X86_64, object, session_image_for_wire_protocol,
     };
 
     #[test]
@@ -213,6 +256,35 @@ mod tests {
         // own, and a republished `latest` would break every running
         // session's relay at once.
         assert_ne!(pinned, SESSION_IMAGE_LATEST);
+    }
+
+    /// The daemon objects key on the wire protocol version they speak, so a
+    /// control plane serves its own build and a publish of one protocol
+    /// never overwrites the daemon another still hands out.
+    #[test]
+    fn daemon_objects_are_stored_under_the_wire_version_they_speak() {
+        let prefix = format!("wire-{}", crate::WIRE_PROTOCOL_VERSION);
+
+        for architecture in BINARIES {
+            assert_eq!(
+                architecture.binary.storage_key(),
+                format!("{prefix}/{}", architecture.binary.name)
+            );
+            assert_eq!(
+                architecture.checksum.storage_key(),
+                format!("{prefix}/{}", architecture.checksum.name)
+            );
+        }
+        assert_eq!(X86_64.binary.name, "flycod-linux-x86_64");
+    }
+
+    /// The assets carry no protocol, so they key on their names the way they
+    /// always have — `flycod.sh` stays where a machine already looks for it.
+    #[test]
+    fn assets_are_stored_under_their_names() {
+        for asset in ASSETS {
+            assert_eq!(asset.storage_key(), asset.name);
+        }
     }
 
     #[test]

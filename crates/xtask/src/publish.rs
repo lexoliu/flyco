@@ -194,7 +194,7 @@ impl PublishFlycod {
         for object in release.objects() {
             let upload = Invocation::upload(release.channel, object);
             run_to_completion(&upload, &workspace.root).await?;
-            info!(key = release.channel.key(object.name()), "uploaded");
+            info!(key = release.channel.key(&object.published), "uploaded");
         }
 
         verify(&release).await

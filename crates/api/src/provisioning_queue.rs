@@ -48,7 +48,7 @@ use askama::Template;
 use flyco_core::{
     ClientEvent, CloudProviderKind, ControlToDaemon, HarnessKind, InterruptedReason, MachineId,
     MachineOrigin, ModelChoice, PermissionMode, ProviderAccountId, ProvisioningStage, RepoSlug,
-    SessionId, SessionRepo, SessionState, UserId,
+    Runtime, SessionId, SessionRepo, SessionState, UserId,
 };
 use flyco_provider::{
     CheckoutSpec, Continuation, DaemonBootstrap, GitAccess, GitIdentity, ProviderError,
@@ -58,7 +58,7 @@ use serde::{Deserialize, Serialize};
 use skyzen_services::queue::{
     QueueBatch, QueueBatchDisposition, QueueMessageDisposition, QueueRetry, SendOptions,
 };
-use skyzen_services::{Db, Kv, Queue};
+use skyzen_services::{Db, Kv, Queue, Storage};
 
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
@@ -69,8 +69,8 @@ use crate::provisioning::Provisioner;
 use crate::rooms::Rooms;
 use crate::vendors::Vendors;
 use crate::{
-    budgets, catalog, daemon_tokens, harness_accounts, machines, mcp, provisioning, session_repos,
-    sessions, users,
+    budgets, catalog, daemon_tokens, harness_accounts, machines, mcp, provisioning, releases,
+    session_repos, sessions, users,
 };
 
 /// How many times one machine is asked for before the session is failed.
@@ -508,13 +508,15 @@ enum Settled {
     Redeliver(ApiError),
 }
 
-/// The three services a provisioning job reaches outside its own database.
+/// The four services a provisioning job reaches outside its own database.
 ///
-/// One argument rather than three, because they arrive and travel together
+/// One argument rather than four, because they arrive and travel together
 /// through every step of a job: the provider builds the machine, the
-/// harness vendor keeps the credential fresh, and GitHub says who the user
-/// is, what their token may do, and where the repository's default branch
-/// points. A call site that swapped two of them would still compile.
+/// harness vendor keeps the credential fresh, GitHub says who the user is,
+/// what their token may do, and where the repository's default branch
+/// points, and object storage says whether a daemon this control plane can
+/// serve was ever published. A call site that swapped two of them would
+/// still compile.
 #[derive(Debug)]
 pub struct Clients<'a, P: Provisioner, G: GithubOauth> {
     /// Builds the machine.
@@ -527,6 +529,12 @@ pub struct Clients<'a, P: Provisioner, G: GithubOauth> {
     /// Reads the user's account, what their token may do, and the
     /// repository's default branch.
     pub github: &'a G,
+    /// Holds the release artifacts a machine's installer downloads.
+    ///
+    /// Read only: the one question asked of it is whether a daemon build
+    /// speaking this control plane's wire protocol exists, and that is
+    /// answered with metadata, never a download.
+    pub storage: &'a Storage,
 }
 
 /// Performs a batch of provisioning jobs.
@@ -1146,6 +1154,28 @@ async fn build(
     .await
     .map_err(Provisioned::from)?;
     let spec = claim.machine.spec();
+
+    // A virtual machine installs its daemon on first boot from `/install/`,
+    // and the installer's failure is invisible to this control plane — there
+    // is no daemon yet to report it, so the machine simply never comes up.
+    // Asking here whether a daemon speaking this wire protocol was ever
+    // published is the only version of "the machine cannot get a daemon"
+    // that does not cost the user a dead machine and a fifteen-minute wait
+    // (issue #382). A container needs no such check: its image tag is
+    // already pinned to this protocol, and a pull that cannot be satisfied
+    // is the provider's answer, said in seconds rather than silence.
+    if spec.runtime == Runtime::Vm
+        && !releases::daemon_is_published(clients.storage)
+            .await
+            .map_err(|error| Provisioned::Retry(error.to_string()))?
+    {
+        return Err(Provisioned::Failed(format!(
+            "no daemon speaking this control plane's wire protocol {} has been published for it, \
+             so a machine cannot be built for this session — resume after the daemon release \
+             that carries that protocol has shipped",
+            flyco_core::WIRE_PROTOCOL_VERSION
+        )));
+    }
 
     let entry = deployable_entry(kv, queue, claim, &account, &spec).await?;
 
@@ -1910,7 +1940,7 @@ mod worker {
     )]
 
     use skyzen_services::queue::{QueueBatch, QueueBatchDisposition, QueueRetry};
-    use skyzen_services::{Db, Kv, Queue};
+    use skyzen_services::{Db, Kv, Queue, Storage};
 
     // `#[wasm_bindgen]` expands an async export into a `future_to_promise`
     // call written unqualified, so the crate it lives in has to be nameable
@@ -1956,6 +1986,16 @@ mod worker {
                 return QueueBatchDisposition::retry_all(QueueRetry::new());
             }
         };
+        // The release artifacts live in the same bucket the transcripts do:
+        // a consumer that cannot open it cannot say whether a machine it
+        // builds could install a daemon this control plane accepts.
+        let storage = match skyzen_cloudflare::CfR2::from_env(&env, binding::TRANSCRIPTS) {
+            Ok(cf) => Storage::new(cf),
+            Err(error) => {
+                tracing::error!(%error, "the provisioning consumer could not open R2");
+                return QueueBatchDisposition::retry_all(QueueRetry::new());
+            }
+        };
         let config = match ApiConfig::from_worker_env(&env) {
             Ok(config) => config,
             Err(error) => {
@@ -1979,6 +2019,7 @@ mod worker {
                 provisioner: &mut CloudProvisioner::new(HostRooms::from_wasm_env(wasm)),
                 vendors: &Vendors::default(),
                 github: &GithubClient::default(),
+                storage: &storage,
             },
             batch,
         )

@@ -10,8 +10,8 @@ use skyzen::routing::Router;
 use skyzen::sql;
 use skyzen::{Body, Method, Request};
 use skyzen_services::durable::DurableDb;
-use skyzen_services::{Db, Queue};
-use skyzen_test::mock::InMemoryQueue;
+use skyzen_services::{Db, Queue, Storage};
+use skyzen_test::mock::{InMemoryQueue, InMemoryStorage};
 
 use crate::anthropic::{
     Account, AnthropicError, ClaudeClient, ClaudeOauth, PlanUsageDocument, TokenRequest, TokenSet,
@@ -1515,6 +1515,26 @@ pub fn test_codespaces() -> crate::codespaces::Codespaces {
 #[must_use]
 pub fn test_clouds() -> Clouds {
     Clouds::Fake(TestClouds)
+}
+
+/// An object storage holding a complete daemon release, as
+/// `cargo xtask publish-flycod` would have left it.
+///
+/// Every object [`flyco_core::release`] names, under the key a publish
+/// writes — a provisioning test's machine installs its daemon from these,
+/// the precondition the real consumer checks before building one.
+pub async fn release_bucket() -> Storage {
+    let storage = Storage::new(InMemoryStorage::new());
+    for object in flyco_core::release::OBJECTS {
+        storage
+            .put(
+                &format!("{}/{}", crate::releases::ROOT, object.storage_key()),
+                object.name.into(),
+            )
+            .await
+            .expect("seed a published object");
+    }
+    storage
 }
 
 /// The vendor clients every test router carries.

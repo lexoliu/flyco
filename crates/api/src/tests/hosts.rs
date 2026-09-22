@@ -24,8 +24,8 @@ use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::rooms::HostRooms;
 use crate::testing::{
     SSH_HOST, TestGithub, host_facts, machine_choice, migrated_router, migrated_router_on,
-    seed_harness_account, seed_host_account, seed_user, test_config, test_host_rooms, test_rooms,
-    test_vendors,
+    release_bucket, seed_harness_account, seed_host_account, seed_user, test_config,
+    test_host_rooms, test_rooms, test_vendors,
 };
 use crate::{machines, session, sessions};
 
@@ -480,6 +480,7 @@ async fn run_queue(db: &Db, kv: &Kv, queue: &Queue, hosts: &HostRooms) {
             provisioner: &mut provisioner,
             vendors: &vendors,
             github: &github,
+            storage: &release_bucket().await,
         },
         QueueBatch {
             queue: "provisioning".to_owned(),
