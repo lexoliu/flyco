@@ -11,10 +11,10 @@ use flyco_core::{
     HarnessTui, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin,
     MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RegionLocation, RepoAddedBy,
     RepoSelection, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
-    SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary, SkillId,
-    SkillMount, TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession,
-    UsageLimitHit, UserId,
+    ReportStartupFailure, ReportStopping, ResizeMachine, RunShell, SendMessage, SessionActivity,
+    SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary, SkillId, SkillMount,
+    TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession, UsageLimitHit,
+    UserId,
     wire::{ApprovalPayload, DaemonAttach, DaemonAttached, DaemonFrames},
 };
 use flyco_provider::host::{HostAttach, HostFrames};
@@ -2483,51 +2483,6 @@ async fn record_reported_models(
     Ok(NoContent)
 }
 
-/// Records how much of this session's harness plan is spent.
-///
-/// Filed by the daemon at session start and after every turn — the two
-/// moments the number can have moved — and stored against the *account*,
-/// because the plan belongs to the account and the settings page reads it
-/// there without a session. The live half goes to the room in the same
-/// call, so the composer's rings move as the turn ends rather than on the
-/// next page load.
-#[skyzen::openapi]
-async fn report_usage(
-    State(session): State<DaemonSession>,
-    Json(report): Json<ReportUsage>,
-    rooms: Rooms,
-    db: Db,
-) -> Outcome<NoContent> {
-    record_reported_usage(session.0, report, &rooms, &db)
-        .await
-        .into()
-}
-
-async fn record_reported_usage(
-    id: SessionId,
-    report: ReportUsage,
-    rooms: &Rooms,
-    db: &Db,
-) -> Result<NoContent, ApiError> {
-    // The owner and the harness come from the session row and never from
-    // the body, for the same reason they do in `record_reported_models`: an
-    // `fd_` token proves which session is calling and nothing about a user.
-    let target = sessions::provisioning_target(db, id)
-        .await?
-        .ok_or(ApiError::SessionNotFound)?;
-    harness_accounts::record_usage(db, target.user_id, target.harness, &report.windows).await?;
-    rooms
-        .broadcast(
-            db,
-            id,
-            &ClientEvent::PlanUsage {
-                windows: report.windows,
-            },
-        )
-        .await?;
-    Ok(NoContent)
-}
-
 /// Records that this session's harness has run out of plan, and stops the
 /// session until the window turns over.
 ///
@@ -2538,10 +2493,9 @@ async fn record_reported_usage(
 /// minutes before the reset, and the conversation is picked back up on the
 /// user's behalf — see [`crate::usage_limits`] for the whole sequence.
 ///
-/// A route of its own rather than a flag on [`report_usage`] beside it,
-/// because the two are read by different things and filed at different
-/// times: a usage snapshot fills the rings and is filed after every turn,
-/// and this pauses a session and is filed once per limit.
+/// The only plan reading a daemon files at all: the rings are read from
+/// the vendor by the control plane, and this is not a reading but an
+/// event — it pauses the session and schedules its return.
 ///
 /// Answers `202`: the pause is durable when this returns, and the machine
 /// the pause is about is released by the minute sweep rather than in this
@@ -3667,7 +3621,6 @@ fn daemon_routes() -> Vec<RouteNode> {
             .at(get_harness_session)
             .put(put_harness_session),
         "/v1/sessions/{id}/models".put(report_models),
-        "/v1/sessions/{id}/usage".put(report_usage),
         "/v1/sessions/{id}/usage-limit".post(report_usage_limit),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/turn-started".post(notify_turn_started),

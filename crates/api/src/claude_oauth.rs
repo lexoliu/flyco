@@ -25,7 +25,7 @@ use skyzen::routing::{CreateRouteNode, Route, RouteNode, Routes as _};
 use skyzen::utils::{Json, State};
 use skyzen_services::{Db, Kv};
 
-use crate::anthropic::{self, ClaudeClient, ClaudeOauth as _, TokenRequest};
+use crate::anthropic::{self, ClaudeOauth as _, TokenRequest};
 use crate::clock::now_unix;
 use crate::config::ApiConfig;
 use crate::crypto::{pkce, random_token};
@@ -34,6 +34,7 @@ use crate::expiring;
 use crate::harness_accounts::{self, StoredCredential};
 use crate::problem::Outcome;
 use crate::respond::Created;
+use crate::vendors::Vendors;
 
 /// How long the user has to approve the grant and paste the code back.
 const ATTEMPT_TTL_SECONDS: u64 = 10 * 60;
@@ -121,12 +122,12 @@ async fn begin(config: &ApiConfig, kv: &Kv, user: UserId) -> Result<ClaudeOauthS
 pub async fn complete(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
-    State(claude): State<ClaudeClient>,
+    State(vendors): State<Vendors>,
     Json(request): Json<CompleteClaudeOauth>,
     kv: Kv,
     db: Db,
 ) -> Outcome<Created<Json<HarnessAccountView>>> {
-    redeem(&config, &claude, &kv, &db, user.id, request)
+    redeem(&config, &vendors, &kv, &db, user.id, request)
         .await
         .map(|view| Created(Json(view)))
         .into()
@@ -134,7 +135,7 @@ pub async fn complete(
 
 async fn redeem(
     config: &ApiConfig,
-    claude: &ClaudeClient,
+    vendors: &Vendors,
     kv: &Kv,
     db: &Db,
     user: UserId,
@@ -166,7 +167,8 @@ async fn redeem(
         return Err(ApiError::ClaudeOauthStateMismatch);
     }
 
-    let tokens = claude
+    let tokens = vendors
+        .claude
         .exchange(TokenRequest::AuthorizationCode {
             code,
             state: &attempt.state,
@@ -186,6 +188,7 @@ async fn redeem(
     harness_accounts::store(
         db,
         config,
+        vendors,
         user,
         &label,
         HarnessKind::ClaudeCode,
@@ -209,9 +212,8 @@ mod tests {
     use skyzen_test::TestContext;
 
     use super::{CompleteClaudeOauth, begin, redeem};
-    use crate::anthropic::ClaudeClient;
     use crate::error::ApiError;
-    use crate::testing::{CLAUDE_CODE, TestClaude, migrate, seed_user, test_config};
+    use crate::testing::{CLAUDE_CODE, migrate, seed_user, test_config, test_vendors};
     use flyco_core::HarnessKind;
 
     /// A refused paste leaves the sign-in standing, and only a redeemed
@@ -226,7 +228,7 @@ mod tests {
         migrate(&db).await;
         let user = seed_user(&db).await;
         let config = test_config();
-        let claude = ClaudeClient::Fake(TestClaude);
+        let vendors = test_vendors();
         let started = begin(&config, &kv, user.id)
             .await
             .expect("a sign-in starts");
@@ -235,18 +237,18 @@ mod tests {
             code: code.to_owned(),
         };
 
-        let wrong = redeem(&config, &claude, &kv, &db, user.id, paste("not-the-code")).await;
+        let wrong = redeem(&config, &vendors, &kv, &db, user.id, paste("not-the-code")).await;
         assert!(
             matches!(wrong, Err(ApiError::ClaudeOauthRejected { .. })),
             "a wrong paste is Anthropic's refusal, not a spent attempt: {wrong:?}"
         );
 
-        let linked = redeem(&config, &claude, &kv, &db, user.id, paste(CLAUDE_CODE))
+        let linked = redeem(&config, &vendors, &kv, &db, user.id, paste(CLAUDE_CODE))
             .await
             .expect("the same sign-in redeems the right paste");
         assert_eq!(linked.harness, HarnessKind::ClaudeCode);
 
-        let again = redeem(&config, &claude, &kv, &db, user.id, paste(CLAUDE_CODE)).await;
+        let again = redeem(&config, &vendors, &kv, &db, user.id, paste(CLAUDE_CODE)).await;
         assert!(
             matches!(again, Err(ApiError::ClaudeOauthAttemptExpired)),
             "a redeemed sign-in is spent: {again:?}"

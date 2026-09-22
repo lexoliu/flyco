@@ -219,7 +219,28 @@ describe("ContextRing", () => {
 
     getByRole("button", { name: /Context/ }).click();
     expect(getByText("Plan usage")).toBeInTheDocument();
-    expect(getByText("No plan limits reported")).toBeInTheDocument();
+    expect(getByText("No plan limits")).toBeInTheDocument();
+  });
+
+  it("never stands a window that has already turned over in for the context", () => {
+    // A page left open across a reset: the window that just emptied is
+    // still the fullest one, and painting the ring red from it would say
+    // the plan is spent when it is not (#381).
+    const { getByRole, queryByRole } = mount({
+      context: null,
+      windows: [
+        window({ used_percent: 100, resets_at_unix: NOW / 1000 - 60 }),
+        window({
+          label: "Weekly",
+          used_percent: 12,
+          resets_at_unix: NOW / 1000 + 6 * 86400,
+          window_minutes: 10080,
+        }),
+      ],
+    });
+
+    expect(queryByRole("button", { name: /100%/ })).toBeNull();
+    expect(getByRole("button", { name: /Plan/ }).textContent).toContain("12%");
   });
 
   it("draws the plain fill, not segments, before any breakdown has been asked for", () => {

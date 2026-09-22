@@ -216,7 +216,7 @@ impl Normalizer {
     /// `account/rateLimits/read` answers `{rateLimits: {primary: …,
     /// secondary: …}}` in exactly this shape; an agent that answers in
     /// another shape reports no windows rather than a wrong one.
-    pub fn on_plan_usage(&mut self, result: &Value) -> (Vec<UsageWindow>, Vec<HarnessEvent>) {
+    pub fn on_plan_usage(&mut self, result: &Value) -> Vec<HarnessEvent> {
         let windows = usage_windows(result);
         let mut events = Vec::new();
         for window in &windows {
@@ -230,7 +230,7 @@ impl Normalizer {
                 self.announced_limits.remove(&window.label);
             }
         }
-        (windows, events)
+        events
     }
 }
 
@@ -563,12 +563,11 @@ mod tests {
                 "secondary": {"usedPercent": 12, "windowDurationMins": 10080},
             }
         });
-        let (windows, events) = normalizer.on_plan_usage(&answer);
-        assert_eq!(windows.len(), 2);
+        let events = normalizer.on_plan_usage(&answer);
         assert_eq!(events.len(), 1, "only the exhausted window announces");
-        let (_, again) = normalizer.on_plan_usage(&answer);
-        assert!(again.is_empty(), "the same snapshot must not repeat");
-        let (_, cleared) = normalizer.on_plan_usage(&json!({
+        let again = normalizer.on_plan_usage(&answer);
+        assert!(again.is_empty(), "the same reading must not repeat");
+        let cleared = normalizer.on_plan_usage(&json!({
             "rateLimits": {"primary": {"usedPercent": 40, "windowDurationMins": 300}}
         }));
         assert!(cleared.is_empty());

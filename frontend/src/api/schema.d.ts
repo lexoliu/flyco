@@ -438,6 +438,10 @@ export interface paths {
         /**
          * Lists the caller's linked harness accounts.
          * @description Lists the caller's linked harness accounts.
+         *
+         *     Costs one vendor subrequest per account whose plan flyco can read —
+         *     one, in practice, since a user has at most one Claude account — because
+         *     [`usage`] reads the plan live rather than serving a stored reading.
          */
         get: operations["flyco_api::harness_accounts::list_harness_accounts"];
         put?: never;
@@ -2879,33 +2883,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/sessions/{id}/usage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /**
-         * Records how much of this session's harness plan is spent.
-         * @description Records how much of this session's harness plan is spent.
-         *
-         *     Filed by the daemon at session start and after every turn — the two
-         *     moments the number can have moved — and stored against the *account*,
-         *     because the plan belongs to the account and the settings page reads it
-         *     there without a session. The live half goes to the room in the same
-         *     call, so the composer's rings move as the turn ends rather than on the
-         *     next page load.
-         */
-        put: operations["flyco_api::app::report_usage"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/sessions/{id}/usage-limit": {
         parameters: {
             query?: never;
@@ -2927,10 +2904,9 @@ export interface paths {
          *     minutes before the reset, and the conversation is picked back up on the
          *     user's behalf — see [`crate::usage_limits`] for the whole sequence.
          *
-         *     A route of its own rather than a flag on [`report_usage`] beside it,
-         *     because the two are read by different things and filed at different
-         *     times: a usage snapshot fills the rings and is filed after every turn,
-         *     and this pauses a session and is filed once per limit.
+         *     The only plan reading a daemon files at all: the rings are read from
+         *     the vendor by the control plane, and this is not a reading but an
+         *     event — it pauses the session and schedules its return.
          *
          *     Answers `202`: the pause is durable when this returns, and the machine
          *     the pause is about is released by the minute sweep rather than in this
@@ -4554,14 +4530,16 @@ export interface components {
              */
             models: components["schemas"]["ModelOption"][];
             /**
-             * @description How much of this account's plan is spent, per rolling window.
+             * @description How much of this account's plan is spent, read from the vendor
+             *     while answering this request.
              *
-             *     The last snapshot a session on this account filed, and empty until
-             *     one has. Carried on the account for the same reason
-             *     [`Self::models`] is — Settings reads the account and nothing else —
-             *     and it is what the settings row draws its bars from.
+             *     Carried on the account for the same reason [`Self::models`] is —
+             *     Settings reads the account and nothing else — and it is what the
+             *     settings row draws its bars from. Never a stored reading: a plan
+             *     moves whether or not flyco is watching, so anything but a live one
+             *     is a number that was true once and is drawn as if it were true now.
              */
-            usage: components["schemas"]["UsageWindow"][];
+            usage: components["schemas"]["PlanUsage"];
         };
         /**
          * @description One slash command the running harness offers its user.
@@ -5646,6 +5624,33 @@ export interface components {
          * @enum {string}
          */
         PermissionMode: "default" | "acceptEdits" | "bypassPermissions" | "plan" | "dontAsk" | "auto";
+        /**
+         * @description What flyco can say about one account's plan right now.
+         *
+         *     Three outcomes, and they are not interchangeable: a plan flyco read, a
+         *     credential with no plan behind it, and a vendor that would not answer.
+         *     Drawing the last two as an empty set of windows is what made a dead
+         *     plan look like an untouched one — so the state is on the wire and the
+         *     UI says which of the three it is.
+         */
+        PlanUsage: {
+            /** @enum {string} */
+            state: "windows";
+            /**
+             * @description Every window the vendor stated, in no particular order; the UI
+             *     sorts them by
+             *     [`window_minutes`](crate::wire::UsageWindow::window_minutes).
+             */
+            windows: components["schemas"]["UsageWindow"][];
+        } | {
+            /** @enum {string} */
+            state: "unmetered";
+        } | {
+            /** @description What went wrong, in the vendor's own words where it gave any. */
+            reason: string;
+            /** @enum {string} */
+            state: "unavailable";
+        };
         /** @description Query the poll presents: `?s=<poll_token>`. */
         Poll: {
             /** @description The `poll_token` `POST /v1/cli-sessions` issued. */
@@ -6223,18 +6228,6 @@ export interface components {
             reason: components["schemas"]["StopReason"];
         };
         /**
-         * @description Request body of `PUT /v1/sessions/{id}/usage`.
-         *
-         *     What a session's daemon reports when its harness answers how much of the
-         *     plan is spent: at start, and after every turn. Recorded against the
-         *     account rather than the session, because the plan is the account's and
-         *     two sessions on one account share it.
-         */
-        ReportUsage: {
-            /** @description Every window the harness reported, in no particular order. */
-            windows: components["schemas"]["UsageWindow"][];
-        };
-        /**
          * @description Request body of `POST /v1/sessions/{id}/machine/resize`.
          *
          *     The disk survives a resize; only compute is replaced. The provider and
@@ -6807,10 +6800,9 @@ export interface components {
          *
          *     The one fact a session's daemon holds that stops it working: the
          *     harness refused a turn because a window of the account's plan is spent.
-         *     Reported separately from [`ReportUsage`] beside it because the two are
-         *     read by different things — a snapshot fills the rings, and this pauses
-         *     the session and schedules its return — and because a snapshot is filed
-         *     after every turn while this is filed once per limit.
+         *     The only plan reading the daemon files at all — the rings are read from
+         *     the vendor by the control plane ([`PlanUsage`]), and this is not a
+         *     reading but an event: it pauses the session and schedules its return.
          *
          *     The control plane refuses a window that names no reset: the whole of
          *     what it does with this is stop the machine until a stated instant, and
@@ -7847,14 +7839,16 @@ export interface operations {
                          */
                         models: components["schemas"]["ModelOption"][];
                         /**
-                         * @description How much of this account's plan is spent, per rolling window.
+                         * @description How much of this account's plan is spent, read from the vendor
+                         *     while answering this request.
                          *
-                         *     The last snapshot a session on this account filed, and empty until
-                         *     one has. Carried on the account for the same reason
-                         *     [`Self::models`] is — Settings reads the account and nothing else —
-                         *     and it is what the settings row draws its bars from.
+                         *     Carried on the account for the same reason [`Self::models`] is —
+                         *     Settings reads the account and nothing else — and it is what the
+                         *     settings row draws its bars from. Never a stored reading: a plan
+                         *     moves whether or not flyco is watching, so anything but a live one
+                         *     is a number that was true once and is drawn as if it were true now.
                          */
-                        usage: components["schemas"]["UsageWindow"][];
+                        usage: components["schemas"]["PlanUsage"];
                     }[];
                 };
             };
@@ -7927,14 +7921,16 @@ export interface operations {
                          */
                         models: components["schemas"]["ModelOption"][];
                         /**
-                         * @description How much of this account's plan is spent, per rolling window.
+                         * @description How much of this account's plan is spent, read from the vendor
+                         *     while answering this request.
                          *
-                         *     The last snapshot a session on this account filed, and empty until
-                         *     one has. Carried on the account for the same reason
-                         *     [`Self::models`] is — Settings reads the account and nothing else —
-                         *     and it is what the settings row draws its bars from.
+                         *     Carried on the account for the same reason [`Self::models`] is —
+                         *     Settings reads the account and nothing else — and it is what the
+                         *     settings row draws its bars from. Never a stored reading: a plan
+                         *     moves whether or not flyco is watching, so anything but a live one
+                         *     is a number that was true once and is drawn as if it were true now.
                          */
-                        usage: components["schemas"]["UsageWindow"][];
+                        usage: components["schemas"]["PlanUsage"];
                     };
                 };
             };
@@ -8002,14 +7998,16 @@ export interface operations {
                          */
                         models: components["schemas"]["ModelOption"][];
                         /**
-                         * @description How much of this account's plan is spent, per rolling window.
+                         * @description How much of this account's plan is spent, read from the vendor
+                         *     while answering this request.
                          *
-                         *     The last snapshot a session on this account filed, and empty until
-                         *     one has. Carried on the account for the same reason
-                         *     [`Self::models`] is — Settings reads the account and nothing else —
-                         *     and it is what the settings row draws its bars from.
+                         *     Carried on the account for the same reason [`Self::models`] is —
+                         *     Settings reads the account and nothing else — and it is what the
+                         *     settings row draws its bars from. Never a stored reading: a plan
+                         *     moves whether or not flyco is watching, so anything but a live one
+                         *     is a number that was true once and is drawn as if it were true now.
                          */
-                        usage: components["schemas"]["UsageWindow"][];
+                        usage: components["schemas"]["PlanUsage"];
                     };
                 };
             };
@@ -8143,14 +8141,16 @@ export interface operations {
                          */
                         models: components["schemas"]["ModelOption"][];
                         /**
-                         * @description How much of this account's plan is spent, per rolling window.
+                         * @description How much of this account's plan is spent, read from the vendor
+                         *     while answering this request.
                          *
-                         *     The last snapshot a session on this account filed, and empty until
-                         *     one has. Carried on the account for the same reason
-                         *     [`Self::models`] is — Settings reads the account and nothing else —
-                         *     and it is what the settings row draws its bars from.
+                         *     Carried on the account for the same reason [`Self::models`] is —
+                         *     Settings reads the account and nothing else — and it is what the
+                         *     settings row draws its bars from. Never a stored reading: a plan
+                         *     moves whether or not flyco is watching, so anything but a live one
+                         *     is a number that was true once and is drawn as if it were true now.
                          */
-                        usage: components["schemas"]["UsageWindow"][];
+                        usage: components["schemas"]["PlanUsage"];
                     };
                 };
             };
@@ -8217,14 +8217,16 @@ export interface operations {
                          */
                         models: components["schemas"]["ModelOption"][];
                         /**
-                         * @description How much of this account's plan is spent, per rolling window.
+                         * @description How much of this account's plan is spent, read from the vendor
+                         *     while answering this request.
                          *
-                         *     The last snapshot a session on this account filed, and empty until
-                         *     one has. Carried on the account for the same reason
-                         *     [`Self::models`] is — Settings reads the account and nothing else —
-                         *     and it is what the settings row draws its bars from.
+                         *     Carried on the account for the same reason [`Self::models`] is —
+                         *     Settings reads the account and nothing else — and it is what the
+                         *     settings row draws its bars from. Never a stored reading: a plan
+                         *     moves whether or not flyco is watching, so anything but a live one
+                         *     is a number that was true once and is drawn as if it were true now.
                          */
-                        usage: components["schemas"]["UsageWindow"][];
+                        usage: components["schemas"]["PlanUsage"];
                     };
                 };
             };
@@ -12159,34 +12161,6 @@ export interface operations {
                         turns: components["schemas"]["TurnSummary"][];
                     };
                 };
-            };
-        };
-    };
-    "flyco_api::app::report_usage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                id: string;
-            };
-            cookie?: never;
-        };
-        /** @description Extractor arguments */
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** @description Every window the harness reported, in no particular order. */
-                    windows: components["schemas"]["UsageWindow"][];
-                };
-            };
-        };
-        responses: {
-            /** @description Done. There is nothing to return. */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
             };
         };
     };

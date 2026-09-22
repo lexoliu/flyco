@@ -360,26 +360,10 @@ pub trait ControlApi: ApprovalRaiser {
         models: &[ModelOption],
     ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
 
-    /// Reports how much of this session's harness plan is spent.
-    ///
-    /// Filed at session start and after every turn. The control plane
-    /// records the snapshot against the account the machine was
-    /// provisioned through and announces it to the session's browsers, so
-    /// the composer's rings and the Settings bars read the same numbers.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ControlApiError`] if the control plane could not be
-    /// reached or refused the report.
-    fn report_usage(
-        &self,
-        windows: &[UsageWindow],
-    ) -> impl Future<Output = Result<(), ControlApiError>> + Send;
-
     /// Reports that this session's harness has run out of plan.
     ///
-    /// Filed once per limit, and the one report that stops the session rather
-    /// than describing it: the control plane releases the machine so the wait
+    /// The only plan reading a daemon files, and the one report that stops
+    /// the session rather than describing it: the control plane releases the machine so the wait
     /// costs nothing, starts it again ten minutes before the window turns
     /// over, and picks the conversation back up (issue #244).
     ///
@@ -658,27 +642,6 @@ impl ControlApi for HttpControlApi {
 
     async fn harness_session(&self) -> Result<HarnessSessionView, ControlApiError> {
         self.get_json("harness-session").await
-    }
-
-    async fn report_usage(&self, windows: &[UsageWindow]) -> Result<(), ControlApiError> {
-        #[derive(serde::Serialize)]
-        struct Body<'a> {
-            windows: &'a [UsageWindow],
-        }
-
-        let url = self.url("usage")?;
-        let mut client = zenwave::client();
-        let response = client
-            .put(&url)
-            .map_err(transport)?
-            .bearer_auth(self.token.clone())
-            .json_body(&Body { windows })
-            .map_err(transport)?
-            .await
-            .map_err(|error| refused("PUT", &url, &error))?;
-
-        debug_assert!(response.status().is_success());
-        Ok(())
     }
 
     async fn report_usage_limit(&self, window: &UsageWindow) -> Result<(), ControlApiError> {

@@ -19,7 +19,7 @@
 
 use flyco_core::{
     CurrentUser, HarnessAccountId, HarnessAccountView, HarnessCredentialInput, HarnessKind,
-    LinkHarnessAccount, LlmUsageView, ModelOption, UsageWindow, UserId, builtin_models,
+    LinkHarnessAccount, LlmUsageView, ModelOption, PlanUsage, UserId, builtin_models,
     normalize_models,
 };
 use flyco_provider::{ClaudeCredential, CodexCredential, DevinCredential, HarnessCredential};
@@ -253,33 +253,28 @@ struct HarnessAccountRow {
     ///
     /// `NULL` until one has, which is what [`builtin_models`] answers for.
     models_json: Option<String>,
-    /// The plan-usage windows this account's last session reported, as JSON.
-    ///
-    /// `NULL` until one has, which reads back as an empty list — no
-    /// session has asked the vendor, so there is nothing true to draw.
-    usage_json: Option<String>,
 }
 
-impl TryFrom<HarnessAccountRow> for HarnessAccountView {
-    type Error = ApiError;
-
-    /// Fails rather than falling back to the built-in list when the stored
-    /// JSON will not parse.
+impl HarnessAccountRow {
+    /// The row as the browser reads it, with the plan just read from the
+    /// vendor.
     ///
-    /// The two states are opposite facts: no stored list means nothing has
-    /// reported yet and the built-in one is the honest answer, and a stored
-    /// list that does not parse means flyco wrote something it cannot read
-    /// back. Answering the second with the first would hide the bug behind
-    /// a picker that quietly showed the wrong models.
-    fn try_from(row: HarnessAccountRow) -> Result<Self, ApiError> {
-        Ok(Self {
-            id: row.id,
-            harness: row.harness,
-            label: row.label,
-            linked_at_unix: row.linked_at_unix,
-            expires_at_unix: row.expires_at_unix,
-            models: parse_models(row.harness, row.models_json.as_deref())?,
-            usage: parse_usage(row.usage_json.as_deref())?,
+    /// The model list fails rather than falling back to the built-in one
+    /// when the stored JSON will not parse: the two states are opposite
+    /// facts. No stored list means nothing has reported yet and the
+    /// built-in one is the honest answer; a stored list that does not
+    /// parse means flyco wrote something it cannot read back, and
+    /// answering the second with the first would hide the bug behind a
+    /// picker that quietly showed the wrong models.
+    fn view(self, usage: PlanUsage) -> Result<HarnessAccountView, ApiError> {
+        Ok(HarnessAccountView {
+            id: self.id,
+            harness: self.harness,
+            label: self.label,
+            linked_at_unix: self.linked_at_unix,
+            expires_at_unix: self.expires_at_unix,
+            models: parse_models(self.harness, self.models_json.as_deref())?,
+            usage,
         })
     }
 }
@@ -296,21 +291,6 @@ fn parse_models(harness: HarnessKind, stored: Option<&str>) -> Result<Vec<ModelO
         None => builtin_models(harness),
     };
     Ok(normalize_models(harness, models))
-}
-
-/// The plan-usage windows an account last reported.
-///
-/// Fails rather than answering "nothing" when the stored JSON will not
-/// parse, for the same reason [`parse_models`] does: no stored snapshot
-/// means nobody has asked the vendor, and a snapshot flyco wrote and cannot
-/// read back is a bug that would otherwise hide behind an empty row.
-fn parse_usage(stored: Option<&str>) -> Result<Vec<UsageWindow>, ApiError> {
-    let Some(stored) = stored else {
-        return Ok(Vec::new());
-    };
-    serde_json::from_str(stored).map_err(|_| {
-        ApiError::CorruptRecord("a stored harness usage snapshot could not be decoded")
-    })
 }
 
 /// The models a session on the caller's account for `harness` may run on.
@@ -343,28 +323,87 @@ pub async fn models(
     parse_models(harness, stored.flatten().as_deref())
 }
 
-/// The plan-usage windows the caller's account for `harness` last reported.
+/// How much of the caller's plan for `harness` is spent, read from the
+/// vendor while answering this request.
 ///
-/// Empty until a session on it has asked its vendor, which is the honest
-/// answer: nothing has been read, so nothing is drawn.
+/// One vendor subrequest, and no cache of any kind: a rolling window moves
+/// whether or not flyco is watching, so the only reading worth drawing is
+/// the one taken while the page was being built. A stored snapshot is what
+/// showed a plan at 2% for days after it stood at 43% (#381).
+///
+/// A vendor that will not answer is [`PlanUsage::Unavailable`] rather than
+/// an error: the plan is decoration on a page that also says whether the
+/// account can open a session at all, and Anthropic being down is not a
+/// reason to refuse the account list.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] if the database fails or the stored snapshot is
-/// malformed.
+/// Returns [`ApiError`] if the database read or the unsealing fails.
 pub async fn usage(
     db: &Db,
+    config: &ApiConfig,
+    vendors: &Vendors,
     user: UserId,
     harness: HarnessKind,
-) -> Result<Vec<UsageWindow>, ApiError> {
-    let stored: Option<Option<String>> = sql!(
-        db,
-        "SELECT usage_json FROM harness_accounts \
-         WHERE user_id = {user} AND harness = {harness}"
-    )
-    .fetch_scalar_optional()
-    .await?;
-    parse_usage(stored.flatten().as_deref())
+) -> Result<PlanUsage, ApiError> {
+    let Some(credential) = stored(db, config, user, harness).await? else {
+        return Ok(PlanUsage::Unmetered);
+    };
+
+    // Only a Claude subscription has a plan flyco can read. An API key
+    // bills per token, and a `ChatGPT` grant's plan is not readable
+    // without a session — both are `Unmetered` rather than an empty set of
+    // windows, so the UI says "no plan" instead of drawing zero. Decided
+    // before anything else, because a credential with no plan behind it
+    // must not be *touched* by a read: rotating a grant nobody is about to
+    // spend is a write this request has no reason to make.
+    match &credential {
+        StoredCredential::ApiKey { .. } | StoredCredential::CodexOauth { .. } => {
+            return Ok(PlanUsage::Unmetered);
+        }
+        StoredCredential::ClaudeOauth { .. } | StoredCredential::OauthToken { .. } => {}
+    }
+
+    // The same refresh-on-use rule the provisioning path follows: a grant
+    // about to expire is rotated before it is spent, here on a read that
+    // would otherwise be the one call that let it die of old age. A
+    // renewal the vendor refuses is a plan flyco cannot read rather than a
+    // failed request — the account is still linked, and what it needs is
+    // to be linked again, which the page can only say if it renders.
+    let credential = if expiring_soon(&credential) {
+        match renewed(db, config, vendors, user, harness, &credential).await {
+            Ok(rotated) => rotated,
+            Err(error) => {
+                tracing::warn!(%error, ?harness, "a grant could not be renewed to read the plan");
+                return Ok(PlanUsage::Unavailable {
+                    reason: error.to_string(),
+                });
+            }
+        }
+    } else {
+        credential
+    };
+
+    let token = match &credential {
+        StoredCredential::ClaudeOauth { access_token, .. } => access_token,
+        StoredCredential::OauthToken { token } => token,
+        // Refused above, and a renewal cannot change a grant's mode.
+        StoredCredential::ApiKey { .. } | StoredCredential::CodexOauth { .. } => {
+            return Ok(PlanUsage::Unmetered);
+        }
+    };
+
+    match vendors.claude.usage(token).await {
+        Ok(plan) => Ok(PlanUsage::Windows {
+            windows: plan.windows(now_unix()),
+        }),
+        Err(error) => {
+            tracing::warn!(%error, ?harness, "the vendor would not state the plan's usage");
+            Ok(PlanUsage::Unavailable {
+                reason: error.to_string(),
+            })
+        }
+    }
 }
 
 /// Records what a session's harness said it offers.
@@ -415,67 +454,44 @@ pub async fn record_models(
     Ok(())
 }
 
-/// Records how much of this account's plan its harness says is spent.
-///
-/// Replaces the stored snapshot wholesale, like [`record_models`]: the
-/// vendor answers the whole question every time, and a window merged out of
-/// two answers would be a reading that was never true at any instant.
-///
-/// An empty list is a legitimate answer here — a session running on an API
-/// key has no plan and no windows, so there is nothing to draw — and it is
-/// stored as such rather than refused, so that an account that moves from a
-/// subscription to a key stops showing yesterday's rings.
-///
-/// # Errors
-///
-/// Returns [`ApiError::HarnessAccountNotFound`] if the user has no account
-/// for that harness, or [`ApiError`] if the database fails.
-pub async fn record_usage(
-    db: &Db,
-    user: UserId,
-    harness: HarnessKind,
-    windows: &[UsageWindow],
-) -> Result<(), ApiError> {
-    let encoded = serde_json::to_string(windows)
-        .map_err(|_| ApiError::CorruptRecord("a harness usage snapshot could not be encoded"))?;
-    // `RETURNING`, like the model list beside it: an account that is not
-    // there is a refusal rather than a write that silently touched nothing.
-    let stored: Option<HarnessAccountId> = sql!(
-        db,
-        "UPDATE harness_accounts SET usage_json = {encoded} \
-         WHERE user_id = {user} AND harness = {harness} RETURNING id"
-    )
-    .fetch_scalar_optional()
-    .await?;
-    let stored = stored.ok_or(ApiError::HarnessAccountNotFound)?;
-    tracing::info!(
-        ?harness,
-        account = %stored,
-        windows = windows.len(),
-        "recorded a harness plan-usage snapshot"
-    );
-    Ok(())
-}
-
 /// Lists the caller's linked harness accounts.
+///
+/// Costs one vendor subrequest per account whose plan flyco can read —
+/// one, in practice, since a user has at most one Claude account — because
+/// [`usage`] reads the plan live rather than serving a stored reading.
 #[skyzen::openapi]
 async fn list_harness_accounts(
     State(user): State<CurrentUser>,
+    State(config): State<ApiConfig>,
+    State(vendors): State<Vendors>,
     db: Db,
 ) -> Outcome<Json<Vec<HarnessAccountView>>> {
-    list(&db, user.id).await.map(Json).into()
+    list(&db, &config, &vendors, user.id).await.map(Json).into()
 }
 
-async fn list(db: &Db, user: UserId) -> Result<Vec<HarnessAccountView>, ApiError> {
+async fn list(
+    db: &Db,
+    config: &ApiConfig,
+    vendors: &Vendors,
+    user: UserId,
+) -> Result<Vec<HarnessAccountView>, ApiError> {
     let rows: Vec<HarnessAccountRow> = sql!(
         db,
-        "SELECT id, harness, label, linked_at_unix, expires_at_unix, models_json, usage_json \
+        "SELECT id, harness, label, linked_at_unix, expires_at_unix, models_json \
          FROM harness_accounts WHERE user_id = {user} ORDER BY harness"
     )
     .fetch_all()
     .await?;
 
-    rows.into_iter().map(HarnessAccountView::try_from).collect()
+    let mut views = Vec::with_capacity(rows.len());
+    for row in rows {
+        // Serially rather than joined: a Worker's subrequests are a
+        // budget, and a user has one account per harness, so the whole
+        // list is one vendor call in practice.
+        let usage = usage(db, config, vendors, user, row.harness).await?;
+        views.push(row.view(usage)?);
+    }
+    Ok(views)
 }
 
 /// Links a harness credential, replacing the credential for that harness.
@@ -574,6 +590,7 @@ fn validated(
 pub async fn store(
     db: &Db,
     config: &ApiConfig,
+    vendors: &Vendors,
     user: UserId,
     label: &str,
     harness: HarnessKind,
@@ -609,7 +626,7 @@ pub async fn store(
         // relinked account keeps whatever its sessions have reported; a
         // fresh one has reported nothing and offers the built-in list.
         models: models(db, user, harness).await?,
-        usage: usage(db, user, harness).await?,
+        usage: usage(db, config, vendors, user, harness).await?,
     })
 }
 
@@ -650,7 +667,7 @@ async fn link(
             "the account label must not be empty",
         ))?,
     };
-    store(db, config, user, &label, harness, &credential).await
+    store(db, config, vendors, user, &label, harness, &credential).await
 }
 
 /// The stored credential for one user's harness, or `None` if unlinked.

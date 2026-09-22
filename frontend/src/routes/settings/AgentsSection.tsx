@@ -264,7 +264,7 @@ export default function AgentsSection() {
                           </Show>
                           <HarnessUsage
                             row={usage()?.find((row) => row.account === account.id)}
-                            windows={account.usage}
+                            plan={account.usage}
                           />
                         </div>
                         );

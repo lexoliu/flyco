@@ -433,24 +433,17 @@ function SessionView(props: { id: string }) {
   /**
    * How much of the plan behind this session's harness account is spent.
    *
-   * The newest snapshot the agent reported over the relay wins; until it
-   * has reported one, the linked account's — which is what the last session
-   * on it filed — stands in, so the rings are right on a page opened before
-   * the machine says anything. Empty until *something* has asked the
-   * vendor, which is the honest state: nothing is drawn.
+   * Read from the vendor by the control plane while the account list was
+   * answered, so the rings are right on a page opened before the machine
+   * says anything — and right *after* one has been idle for a week, which
+   * a snapshot filed by the last session was not (#381). Empty where the
+   * credential has no plan or the vendor would not answer: nothing true to
+   * draw is nothing drawn.
    */
   const planUsage = createMemo<UsageWindow[]>(() => {
-    const events = relay.events();
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const entry = events[i];
-      if (entry !== undefined && entry.event.type === "plan_usage") {
-        return orderedWindows(entry.event.windows);
-      }
-    }
     const harness = session()?.harness;
-    return orderedWindows(
-      readiness.harness().find((account) => account.harness === harness)?.usage ?? [],
-    );
+    const usage = readiness.harness().find((account) => account.harness === harness)?.usage;
+    return orderedWindows(usage?.state === "windows" ? usage.windows : []);
   });
 
   /**

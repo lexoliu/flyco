@@ -1160,7 +1160,9 @@ struct PendingPermission {
 enum PendingCall {
     /// A compaction; its caller waits on the ack.
     Compact(oneshot::Sender<Result<(), AcpError>>),
-    /// A plan-usage read; nobody waits on it, its answer becomes `PlanUsage`.
+    /// A plan-usage read; nobody waits on it, and what it answers is only
+    /// read for the limit it may announce — the rings are the control
+    /// plane's, read from the vendor while a page is built.
     Usage,
 }
 
@@ -1525,13 +1527,12 @@ impl Driver {
             }
             PendingCall::Usage => match result {
                 Ok(value) => {
-                    let (windows, events) = self.normalizer.on_plan_usage(&value);
-                    for event in events {
+                    for event in self.normalizer.on_plan_usage(&value) {
                         if !emit(&self.outputs, SessionOutput::Event { event }).await {
                             return false;
                         }
                     }
-                    emit(&self.outputs, SessionOutput::PlanUsage { windows }).await
+                    true
                 }
                 Err(error) => {
                     // An agent that cannot state the plan's meters

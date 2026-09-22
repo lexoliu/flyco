@@ -3,7 +3,7 @@ import { render } from "@solidjs/testing-library";
 import HarnessUsage from "./HarnessUsage";
 import type { UsageWindow } from "../api/wire";
 
-/** One window, as a session on the account last filed it. */
+/** One window, as the vendor stated it while the page was answered. */
 function window(overrides: Partial<UsageWindow> = {}): UsageWindow {
   return {
     label: "5-hour",
@@ -15,26 +15,40 @@ function window(overrides: Partial<UsageWindow> = {}): UsageWindow {
 }
 
 describe("HarnessUsage", () => {
-  it("draws nothing at all for an account no session has reported on", () => {
-    const { container } = render(() => <HarnessUsage row={undefined} windows={[]} />);
+  it("draws nothing at all for a credential with no plan behind it", () => {
+    const { container } = render(() => (
+      <HarnessUsage row={undefined} plan={{ state: "unmetered" }} />
+    ));
 
     expect(container.querySelectorAll("[role='progressbar']")).toHaveLength(0);
     expect(container.textContent).toBe("");
+  });
+
+  it("says the plan could not be read rather than drawing it at zero", () => {
+    const { container, getByText } = render(() => (
+      <HarnessUsage row={undefined} plan={{ state: "unavailable", reason: "HTTP 401" }} />
+    ));
+
+    expect(getByText("Plan usage unavailable")).toBeInTheDocument();
+    expect(container.querySelectorAll("[role='progressbar']")).toHaveLength(0);
   });
 
   it("reads the plan's windows shortest first, with how long each has left", () => {
     const { getAllByRole, getByText } = render(() => (
       <HarnessUsage
         row={undefined}
-        windows={[
-          window({
-            label: "Weekly",
-            window_minutes: 10080,
-            used_percent: 15,
-            resets_at_unix: null,
-          }),
-          window(),
-        ]}
+        plan={{
+          state: "windows",
+          windows: [
+            window({
+              label: "Weekly",
+              window_minutes: 10080,
+              used_percent: 15,
+              resets_at_unix: null,
+            }),
+            window(),
+          ],
+        }}
       />
     ));
 
@@ -52,11 +66,14 @@ describe("HarnessUsage", () => {
     const { getAllByRole } = render(() => (
       <HarnessUsage
         row={undefined}
-        windows={[
-          window({ used_percent: 26 }),
-          window({ label: "Weekly", window_minutes: 10080, used_percent: 84 }),
-          window({ label: "Monthly", window_minutes: 43200, used_percent: 97 }),
-        ]}
+        plan={{
+          state: "windows",
+          windows: [
+            window({ used_percent: 26 }),
+            window({ label: "Weekly", window_minutes: 10080, used_percent: 84 }),
+            window({ label: "Monthly", window_minutes: 43200, used_percent: 97 }),
+          ],
+        }}
       />
     ));
 

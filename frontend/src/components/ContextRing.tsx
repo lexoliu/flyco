@@ -72,6 +72,12 @@ export interface ContextRingProps {
   onBreakdown: () => void;
 }
 
+/** Whether a window's turnover is still ahead of `now` (milliseconds). */
+function current(window: UsageWindow, now: number): boolean {
+  const resets = window.resets_at_unix;
+  return resets === null || resets === undefined || resets > Math.floor(now / 1000);
+}
+
 /** How long an unanswered request keeps the button saying it asked. */
 const ASK_TIMEOUT_MS = 15_000;
 
@@ -195,9 +201,17 @@ export default function ContextRing(props: ContextRingProps) {
         hint: undefined,
       };
     }
+    // Only windows that are still open. A window whose turnover has
+    // passed describes an interval that has ended — on a page left open
+    // across a reset, the fullest window is the one that just emptied —
+    // and painting the ring red from it says the plan is spent when it is
+    // not (#381).
     const fullest = props.windows.reduce<UsageWindow | null>(
       (fullest, window) =>
-        fullest === null || window.used_percent > fullest.used_percent ? window : fullest,
+        current(window, props.now) &&
+        (fullest === null || window.used_percent > fullest.used_percent)
+          ? window
+          : fullest,
       null,
     );
     if (fullest === null) {
@@ -379,7 +393,7 @@ export default function ContextRing(props: ContextRingProps) {
             <Show
               when={props.windows.length > 0}
               fallback={
-                <p class={styles.note}>No plan limits reported</p>
+                <p class={styles.note}>No plan limits</p>
               }
             >
               <For each={orderedWindows(props.windows)}>

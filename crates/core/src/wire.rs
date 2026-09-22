@@ -1503,21 +1503,6 @@ pub enum ClientEvent {
         /// Every model the harness listed, in its own order.
         models: Vec<crate::harness::ModelOption>,
     },
-    /// How much of the plan behind this session's harness account is spent.
-    ///
-    /// State rather than conversation, like [`Models`](Self::Models): the
-    /// newest snapshot wins and the composer reads the last one. Reported
-    /// at session start and after every turn, because a turn is the only
-    /// thing that moves the number and reading it any oftener would be
-    /// polling the vendor on a timer. Named `plan_usage` and not `usage`
-    /// because [`Usage`](Self::Usage) is already this session's token
-    /// count — the two answer different questions and a reader has to be
-    /// able to tell which one a frame is.
-    PlanUsage {
-        /// Every window the harness reported, in no particular order; the
-        /// UI sorts them by [`UsageWindow::window_minutes`].
-        windows: Vec<UsageWindow>,
-    },
     /// The slash commands this session's harness offers.
     ///
     /// State rather than conversation, like [`Models`](Self::Models): the
@@ -2124,12 +2109,6 @@ mod tests {
                 hourly: None,
                 spot: false,
                 restarted: false,
-            },
-            ClientEvent::PlanUsage {
-                windows: vec![
-                    UsageWindow::new(Some(300), None, 26, Some(1_789_002_000)),
-                    UsageWindow::new(Some(10_080), Some("Fable"), 26, None),
-                ],
             },
             ClientEvent::ApprovalPending {
                 id: ApprovalId::generate(),

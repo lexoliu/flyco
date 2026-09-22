@@ -387,6 +387,7 @@ async fn a_refresh_token_openai_will_not_take_fails_loudly(_ctx: TestContext, db
     harness_accounts::store(
         &db,
         &test_config(),
+        &test_vendors(),
         user.id,
         CODEX_ACCOUNT_EMAIL,
         HarnessKind::Codex,
