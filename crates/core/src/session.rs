@@ -422,6 +422,20 @@ const fn default_spot() -> bool {
 /// and short enough that forgotten machines do not sit on a disk forever.
 pub const ARCHIVE_AFTER_IDLE_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// How long a session that is *over* may sit before flyco archives it —
+/// a day, against the week a session still in play gets.
+///
+/// [`Failed`](SessionState::Failed) is the only terminal state flyco
+/// writes, and there is nothing to come back to on one: the machine is
+/// already released and archiving keeps the transcript, so a resume from
+/// `Archived` loses nothing a `Failed` session still had. A live session
+/// that is merely idle might still be picked up — a paused thought, an
+/// interrupted machine a resume could restart — which is what the longer
+/// clock is for. Twenty-four hours is long enough to read what the
+/// failure said and act on it; past that an unarchived failure is sidebar
+/// clutter, and the sidebar is finite.
+pub const ARCHIVE_FINISHED_AFTER_IDLE_SECS: u64 = 24 * 60 * 60;
+
 /// How long an idle session keeps its machine's compute before flyco
 /// suspends it.
 ///

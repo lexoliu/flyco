@@ -104,8 +104,8 @@ pub use repo::{
     RepoSlug, RepoStatus, SessionRepo, checkout_dir,
 };
 pub use session::{
-    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, DesktopInputRequest,
-    DesktopTakeoverRequest, HarnessSessionView, HarnessTui, InterruptedReason,
+    ARCHIVE_AFTER_IDLE_SECS, ARCHIVE_FINISHED_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB,
+    DesktopInputRequest, DesktopTakeoverRequest, HarnessSessionView, HarnessTui, InterruptedReason,
     MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
     PROVISION_DEADLINE_SECS, PausedReason, RunShell, SUSPEND_AFTER_IDLE_SECS, SendMessage,
     SessionActivity, SessionDetail, SessionState, SessionSummary, SessionTransitionError,

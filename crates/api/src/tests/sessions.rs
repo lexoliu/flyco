@@ -952,6 +952,204 @@ async fn an_idle_session_is_archived_automatically(ctx: TestContext, kv: Kv, db:
     assert_eq!(archived.summary.state, SessionState::Archived);
 }
 
+/// A session that provisioning gave up on — `Failed`, the only terminal
+/// state flyco writes, with the reservation for its unbuilt machine
+/// released. The shape [`sessions::idle_since`] selects on the finished
+/// clock.
+async fn a_failed_session(db: &Db, rooms: &Rooms, user: &CurrentUser) -> SessionId {
+    let session = testing::seed_session(db, user).await;
+    let account = testing::seed_provider_account(db, user.id).await;
+    let choice = machine_choice(account);
+    machines::reserve(
+        db,
+        session,
+        account,
+        &flyco_core::MachineSpec {
+            provider: flyco_core::CloudProviderKind::Host,
+            machine_type: choice.machine_type,
+            runtime: choice.runtime,
+            region: choice.region,
+            spot: choice.spot,
+            disk_gib: choice.disk_gib,
+        },
+    )
+    .await
+    .expect("reserve the machine");
+    sessions::fail(
+        db,
+        rooms,
+        session,
+        "the provider had not finished building the machine",
+    )
+    .await
+    .expect("the session failed");
+    session
+}
+
+/// Backdates a session's activity clock `secs` into the past.
+async fn idle_for(db: &Db, session: SessionId, secs: u64) {
+    let cutoff = crate::clock::now_unix() - secs;
+    sql!(
+        db,
+        "UPDATE sessions SET last_active_unix = {cutoff} WHERE id = {session}"
+    )
+    .execute()
+    .await
+    .expect("backdate idle time");
+}
+
+#[skyzen::test]
+async fn a_finished_session_is_archived_on_a_shorter_clock(_ctx: TestContext, db: Db) {
+    let rooms = crate::testing::test_rooms();
+    testing::migrate(&db).await;
+    let user = seed_user(&db).await;
+    let session = a_failed_session(&db, &rooms, &user).await;
+    idle_for(
+        &db,
+        session,
+        flyco_core::ARCHIVE_FINISHED_AFTER_IDLE_SECS + 1,
+    )
+    .await;
+
+    app::archive_idle(
+        &db,
+        &testing::test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &testing::test_host_rooms(),
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Archived,
+        "a session that is over has nothing to come back to"
+    );
+}
+
+#[skyzen::test]
+async fn a_finished_session_inside_its_clock_is_not_archived(_ctx: TestContext, db: Db) {
+    let rooms = crate::testing::test_rooms();
+    testing::migrate(&db).await;
+    let user = seed_user(&db).await;
+    let session = a_failed_session(&db, &rooms, &user).await;
+    // The failure is fresh: `fail` stamps the activity clock itself.
+
+    app::archive_idle(
+        &db,
+        &testing::test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &testing::test_host_rooms(),
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Failed,
+        "a day has not passed"
+    );
+}
+
+/// The short clock is for sessions that are over, not ones that are
+/// merely quiet: a live session inside its week is left alone even though
+/// it has already outlasted the finished clock.
+#[skyzen::test]
+async fn a_live_session_idle_inside_its_week_is_not_archived(_ctx: TestContext, db: Db) {
+    let hosts = testing::test_host_rooms();
+    let rooms = crate::testing::test_rooms();
+    let (user, session) = on_a_machine(&db, &hosts, &rooms, MachineState::Running).await;
+    idle_for(
+        &db,
+        session,
+        flyco_core::ARCHIVE_FINISHED_AFTER_IDLE_SECS + 1,
+    )
+    .await;
+
+    app::archive_idle(
+        &db,
+        &testing::test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &hosts,
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("the sweep runs");
+
+    assert_eq!(
+        sessions::find(&db, user.id, session)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Active,
+        "the week is a live session's clock"
+    );
+}
+
+/// A session whose archive is refused — a machine on a host that cannot
+/// be asked — is logged and left for the next pass, not a reason to stop
+/// the sweep over it.
+#[skyzen::test]
+async fn one_failed_archive_does_not_stop_the_sweep(_ctx: TestContext, db: Db) {
+    let rooms = crate::testing::test_rooms();
+    // The first session's machine belongs to a host that attached to a
+    // rooms instance the sweep is not using — what a room holding no
+    // connection reports.
+    let attached = testing::test_host_rooms();
+    let (stuck_owner, stuck) = on_a_machine(&db, &attached, &rooms, MachineState::Running).await;
+    let finished = a_failed_session(&db, &rooms, &stuck_owner).await;
+    idle_for(&db, stuck, flyco_core::ARCHIVE_AFTER_IDLE_SECS + 1).await;
+    idle_for(
+        &db,
+        finished,
+        flyco_core::ARCHIVE_FINISHED_AFTER_IDLE_SECS + 1,
+    )
+    .await;
+
+    app::archive_idle(
+        &db,
+        &testing::test_config(),
+        &TestGithub::default(),
+        &rooms,
+        &testing::test_host_rooms(),
+        crate::clock::now_unix(),
+    )
+    .await
+    .expect("one refusal does not stop the sweep");
+
+    assert_eq!(
+        sessions::find(&db, stuck_owner.id, stuck)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Active,
+        "the refused archive is left for the next pass"
+    );
+    assert_eq!(
+        sessions::find(&db, stuck_owner.id, finished)
+            .await
+            .expect("read the session")
+            .summary
+            .state,
+        SessionState::Archived
+    );
+}
+
 // ── The idle suspension sweep ──
 //
 // `archive_idle` gives a session a week; `suspend_idle` gives its machine
