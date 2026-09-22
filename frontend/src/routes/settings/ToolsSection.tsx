@@ -16,7 +16,9 @@ import { A } from "@solidjs/router";
 import { createQuery } from "../../lib/query";
 import { LibraryBig, Plus, Upload } from "lucide-solid";
 import ProblemNotice from "../../components/ProblemNotice";
+import Skeleton from "../../components/Skeleton";
 import Toggle from "../../components/Toggle";
+import Modal from "../../components/Modal";
 import McpServerForm from "./McpServerForm";
 import {
   deleteMcpServer,
@@ -56,10 +58,6 @@ export default function ToolsSection() {
     <section class={styles.section}>
       <header class={styles.sectionHead}>
         <h2>Tools</h2>
-        <p class={styles.lede}>
-          Extra capabilities every session gets. Agents can use what is here but cannot change it —
-          flyco provisions both from this page and nowhere else.
-        </p>
       </header>
       <McpServers />
       <Skills />
@@ -108,7 +106,10 @@ function McpServers() {
       <p class={styles.groupLabel}>MCP servers</p>
       <ProblemNotice error={servers.error ?? error()} />
 
-      <Show when={!servers.loading}>
+      {/* The rows the first read is bringing, rather than an empty state
+          that contradicts itself a moment later. A refetch keeps what is
+          on screen: the list is still true while it is being re-read. */}
+      <Show when={servers.settled} fallback={<Skeleton lines={3} />}>
         <Show when={listed().length > 0}>
           <div class={styles.cards}>
             <For each={listed()}>
@@ -129,9 +130,9 @@ function McpServers() {
                       <button
                         type="button"
                         class={styles.pill}
-                        onClick={() => setEditing(editing() === server.id ? null : server.id)}
+                        onClick={() => setEditing(server.id)}
                       >
-                        {editing() === server.id ? "Close" : "Edit"}
+                        Edit
                       </button>
                       <button
                         type="button"
@@ -143,16 +144,7 @@ function McpServers() {
                       </button>
                     </div>
                   </div>
-                  <Show when={editing() === server.id}>
-                    <McpServerForm
-                      server={server}
-                      onSaved={() => {
-                        setEditing(null);
-                        void refetch();
-                      }}
-                      onCancel={() => setEditing(null)}
-                    />
-                  </Show>
+
                 </article>
               )}
             </For>
@@ -160,30 +152,14 @@ function McpServers() {
         </Show>
 
         <Show
-          when={adding()}
+          when={listed().length > 0}
           fallback={
-            <Show
-              when={listed().length > 0}
-              fallback={
-                <div class={styles.empty}>
-                  {/* The catalog is the primary: a browser-only user picks a
-                      server from a list; typing a transport by hand is the
-                      way in for one the registry does not list. */}
-                  <div class={styles.actions}>
-                    <A href={MCP_CATALOG} class={styles.pillPrimary}>
-                      <LibraryBig size={14} aria-hidden="true" />
-                      Add from catalog
-                    </A>
-                    <button type="button" class={styles.pill} onClick={() => setAdding(true)}>
-                      <Plus size={14} aria-hidden="true" />
-                      Add server
-                    </button>
-                  </div>
-                </div>
-              }
-            >
+            <div class={styles.empty}>
+              {/* The catalog is the primary: a browser-only user picks a
+                  server from a list; typing a transport by hand is the
+                  way in for one the registry does not list. */}
               <div class={styles.actions}>
-                <A href={MCP_CATALOG} class={styles.pill}>
+                <A href={MCP_CATALOG} class={styles.pillPrimary}>
                   <LibraryBig size={14} aria-hidden="true" />
                   Add from catalog
                 </A>
@@ -192,19 +168,49 @@ function McpServers() {
                   Add server
                 </button>
               </div>
-            </Show>
+            </div>
           }
         >
-          <article class={styles.card}>
+          <div class={styles.actions}>
+            <A href={MCP_CATALOG} class={styles.pill}>
+              <LibraryBig size={14} aria-hidden="true" />
+              Add from catalog
+            </A>
+            <button type="button" class={styles.pill} onClick={() => setAdding(true)}>
+              <Plus size={14} aria-hidden="true" />
+              Add server
+            </button>
+          </div>
+        </Show>
+      </Show>
+
+      {/* One form, in a dialog, for both adding and editing: it carries a
+          transport, a command line and a set of headers, and growing that
+          out of the row the user clicked moved every row below it. */}
+      <Show when={adding()}>
+        <Modal title="Add MCP server" onClose={() => setAdding(false)}>
+          <McpServerForm
+            onSaved={() => {
+              setAdding(false);
+              void refetch();
+            }}
+            onCancel={() => setAdding(false)}
+          />
+        </Modal>
+      </Show>
+      <Show when={listed().find((server) => server.id === editing())}>
+        {(server) => (
+          <Modal title={`Edit ${server().name}`} onClose={() => setEditing(null)}>
             <McpServerForm
+              server={server()}
               onSaved={() => {
-                setAdding(false);
+                setEditing(null);
                 void refetch();
               }}
-              onCancel={() => setAdding(false)}
+              onCancel={() => setEditing(null)}
             />
-          </article>
-        </Show>
+          </Modal>
+        )}
       </Show>
     </div>
   );

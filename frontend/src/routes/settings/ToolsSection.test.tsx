@@ -17,6 +17,25 @@ vi.mock("../../api/client", async () => {
 });
 
 describe("ToolsSection", () => {
+  it("asks for a server in a dialog rather than growing the page", async () => {
+    // A form with a transport, a command line and a set of headers used to
+    // expand out of the row the user clicked, moving every row below it.
+    const history = createMemoryHistory();
+    history.set({ value: "/settings/tools", replace: true, scroll: false });
+    const { findByRole, getByRole } = render(() => (
+      <MemoryRouter history={history}>
+        <Route path="/settings/tools" component={ToolsSection} />
+      </MemoryRouter>
+    ));
+
+    (await findByRole("button", { name: "Add server" })).click();
+    const dialog = getByRole("dialog", { name: "Add MCP server" });
+    expect(dialog).toBeInTheDocument();
+    // The platform's own modal, so the page behind it is inert and Escape
+    // closes it without a listener of ours.
+    expect((dialog as HTMLDialogElement).open).toBe(true);
+  });
+
   it("keeps both blocks on screen and says why when their lists fail to load", async () => {
     // Inside a router: the section links to the catalog picker.
     const history = createMemoryHistory();

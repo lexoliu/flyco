@@ -178,7 +178,7 @@ function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
         </p>
       </Show>
 
-      <Show when={catalog.latest === undefined && catalog.error === undefined}>
+      <Show when={!catalog.settled && catalog.error === undefined}>
         <Skeleton lines={6} />
       </Show>
 

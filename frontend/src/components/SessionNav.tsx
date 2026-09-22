@@ -132,7 +132,7 @@ export default function SessionNav(props: SessionNavProps) {
               moment before the first response and correct itself a frame
               later, which is the flash a person sees on every load.
             */
-            <Show when={sessions.latest !== undefined} fallback={<Skeleton lines={6} />}>
+            <Show when={sessions.settled} fallback={<Skeleton lines={6} />}>
               <p class={styles.empty}>
                 {showArchived() ? "Nothing archived." : "No sessions yet."}
               </p>
