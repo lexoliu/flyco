@@ -107,8 +107,6 @@ pub enum Call {
     StoppingReported(flyco_core::StopReason),
     /// The models the harness offers were filed with the control plane.
     ModelsReported(Vec<flyco_core::ModelOption>),
-    /// How much of the plan is spent was filed with the control plane.
-    UsageReported(Vec<flyco_core::UsageWindow>),
     /// A spent plan window was filed with the control plane, which is what
     /// pauses the session until it turns over (issue #244).
     UsageLimitReported(flyco_core::UsageWindow),

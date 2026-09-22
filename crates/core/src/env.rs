@@ -13,7 +13,8 @@ use utoipa::ToSchema;
 ///
 /// Flyco sandboxes the machine but not its egress: until network control
 /// ships, a secret placed here is reachable by anything the agent runs.
-pub const NETWORK_CONTROL_WARNING: &str = "Flyco does not restrict a session's network access yet, so any process the agent starts can read these values and send them anywhere. Use scoped, short-lived credentials until network control ships.";
+pub const NETWORK_CONTROL_WARNING: &str =
+    "Anything the agent runs can read these and reach the network. Use short-lived credentials.";
 
 /// One `KEY=value` pair of a session's environment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]

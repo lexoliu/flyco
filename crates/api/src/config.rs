@@ -109,6 +109,11 @@ pub mod binding {
     /// consumer and the scheduled worker — because neither is a request and
     /// neither gets `#[skyzen::main]`'s service wiring.
     pub const AUTH_KV: &str = "AUTH_KV";
+    /// R2 binding holding transcripts and the published release artifacts.
+    ///
+    /// The provisioning consumer reads it to learn whether a machine it is
+    /// about to build could install a daemon this control plane accepts.
+    pub const TRANSCRIPTS: &str = "TRANSCRIPTS";
 }
 
 /// Why the control plane refused to start.

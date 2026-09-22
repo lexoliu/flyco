@@ -55,9 +55,7 @@ export default function Detents(props: DetentsProps) {
             />
           )}
         </For>
-        <div class={styles.thumbTravel} aria-hidden="true" style={{ "--travelled": travelled() }}>
-          <span class={styles.thumb} />
-        </div>
+        <span class={styles.thumb} aria-hidden="true" style={{ "--travelled": travelled() }} />
         <input
           class={styles.range}
           type="range"

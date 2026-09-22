@@ -9,15 +9,11 @@ import {
 import { createQuery } from "../lib/query";
 import { A, Navigate, useLocation, useNavigate } from "@solidjs/router";
 import {
-  Check,
   LogOut,
   Menu,
-  Monitor,
-  Moon,
   PanelLeftClose,
   Settings as SettingsIcon,
   SquarePen,
-  Sun,
 } from "lucide-solid";
 import Logomark, { FLYCO_MARK } from "./Logomark";
 import Popover from "./Popover";
@@ -28,11 +24,6 @@ import SettingsNav from "./SettingsNav";
 import { getMe } from "../api/client";
 import { isSignedIn, onSessionChanged } from "../lib/session";
 import { signOut } from "../lib/signOut";
-import {
-  type ThemePreference,
-  readStoredThemePreference,
-  setTheme,
-} from "../lib/theme";
 import { cx } from "../lib/cx";
 import styles from "./AppShell.module.css";
 
@@ -53,16 +44,6 @@ const BARE_ROUTES = new Set([
   // would sit beside is the product it is not yet a part of.
   "/cli/authorize",
 ]);
-
-const THEMES: readonly {
-  value: ThemePreference;
-  label: string;
-  icon: typeof Sun;
-}[] = [
-  { value: "system", label: "System", icon: Monitor },
-  { value: "light", label: "Light", icon: Sun },
-  { value: "dark", label: "Dark", icon: Moon },
-];
 
 /**
  * Up to two letters standing in for an avatar.
@@ -197,18 +178,10 @@ export default function AppShell(props: { children?: JSX.Element }) {
  */
 function AccountMenu(props: { onSignOut: () => void }) {
   const [me] = createQuery(getMe);
-  const [theme, setPreference] = createSignal<ThemePreference>(
-    readStoredThemePreference(),
-  );
   const initials = createMemo(() => {
     const login = me()?.login;
     return login === undefined ? "" : initialsOf(login);
   });
-
-  function choose(preference: ThemePreference): void {
-    setTheme(preference);
-    setPreference(preference);
-  }
 
   return (
     <Popover
@@ -257,36 +230,6 @@ function AccountMenu(props: { onSignOut: () => void }) {
             <SettingsIcon size={14} aria-hidden="true" />
             Settings
           </A>
-          <p class={styles.menuLabel} id="appearance-label">
-            Appearance
-          </p>
-          <div
-            class={styles.themeRow}
-            role="group"
-            aria-labelledby="appearance-label"
-          >
-            {THEMES.map((option) => (
-              <button
-                type="button"
-                class={cx(
-                  styles.themeOption,
-                  theme() === option.value && styles.themeChosen,
-                )}
-                aria-pressed={theme() === option.value}
-                onClick={() => choose(option.value)}
-              >
-                <option.icon size={14} aria-hidden="true" />
-                {option.label}
-                <Show when={theme() === option.value}>
-                  <Check
-                    size={13}
-                    aria-hidden="true"
-                    class={cx(styles.themeCheck)}
-                  />
-                </Show>
-              </button>
-            ))}
-          </div>
           <button
             type="button"
             class={styles.menuAction}

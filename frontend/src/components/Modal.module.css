@@ -1,0 +1,55 @@
+/* The panel of Modal.tsx. The browser centres a `<dialog>` in the top
+   layer; what is set here is its size, its surface and its backdrop. */
+
+.modal {
+  width: min(560px, calc(100vw - 2 * var(--space-4)));
+  max-height: min(80vh, 720px);
+  padding: 0;
+  border: var(--border-width) solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  color: var(--color-text);
+  overflow: hidden;
+}
+
+.modal::backdrop {
+  background: rgb(0 0 0 / 40%);
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4) var(--space-3);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--text-md);
+  font-weight: var(--weight-semibold);
+}
+
+.close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.close:hover {
+  background: var(--color-surface-sunken);
+  color: var(--color-text);
+}
+
+.body {
+  max-height: calc(min(80vh, 720px) - 60px);
+  padding: 0 var(--space-4) var(--space-4);
+  overflow-y: auto;
+}

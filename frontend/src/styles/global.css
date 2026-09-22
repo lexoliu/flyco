@@ -186,3 +186,42 @@ textarea:disabled,
 .hljs-addition {
   color: var(--color-success);
 }
+
+/*
+ * Scrollbars inside the app, everywhere one appears.
+ *
+ * The rail, the drawer and every panel scroll inside a layout that is
+ * otherwise quiet; a platform scrollbar in a mouse-driven window is a
+ * wide grey slab down the middle of it. Thin, and only visible where
+ * something scrolls: the track stays out of the way and the thumb takes
+ * the page's own faint ink. A touch device draws its own overlay bar and
+ * ignores all of this.
+ */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: var(--radius-full);
+  background-clip: content-box;
+  background-color: var(--color-border-strong);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-text-faint);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

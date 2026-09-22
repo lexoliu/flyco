@@ -11,11 +11,12 @@
  * only what the session's harness offers.
  */
 import { For, Show } from "solid-js";
-import { Check, ShieldCheck } from "lucide-solid";
+import { Dynamic } from "solid-js/web";
+import { Ban, Check, Eye, FilePen, Hand, ShieldAlert, Sparkles } from "lucide-solid";
 import Popover from "./Popover";
 import type { PermissionMode } from "../api/wire";
 import { cx } from "../lib/cx";
-import { modeLabel, type ModeOption } from "../lib/modes";
+import { modeLabel, type ModeIcon, type ModeOption } from "../lib/modes";
 import composer from "./Composer.module.css";
 import styles from "./ModeChip.module.css";
 
@@ -53,7 +54,7 @@ export default function ModeChip(props: ModeChipProps) {
           class={cx(composer.chip, props.saving === true && styles.saving)}
           title="Permission mode"
         >
-          <ShieldCheck size={13} aria-hidden="true" />
+          <ModeMark mode={props.mode} modes={props.modes} size={13} />
           <span class={composer.chipLabel}>{modeLabel(props.mode)}</span>
         </button>
       )}
@@ -72,6 +73,7 @@ export default function ModeChip(props: ModeChipProps) {
                     class={cx(
                       composer.option,
                       styles.option,
+                      option.unrestricted === true && styles.optionOpen,
                       option.id === props.mode && composer.optionChosen,
                     )}
                     onClick={() => {
@@ -79,6 +81,12 @@ export default function ModeChip(props: ModeChipProps) {
                       close();
                     }}
                   >
+                    <Dynamic
+                      component={GLYPH[option.icon]}
+                      class={cx(styles.optionIcon)}
+                      size={16}
+                      aria-hidden="true"
+                    />
                     <span class={styles.optionText}>
                       <span class={styles.optionName}>{option.label}</span>
                       <span class={styles.optionDescription}>{option.description}</span>
@@ -95,4 +103,29 @@ export default function ModeChip(props: ModeChipProps) {
       )}
     </Popover>
   );
+}
+
+/**
+ * The glyph each mode is drawn with — a hand for the one that stops to
+ * ask, an eye for the one that only reads, an open shield for the one
+ * that stops nothing.
+ */
+const GLYPH: Record<ModeIcon, typeof Hand> = {
+  auto: Sparkles,
+  ask: Hand,
+  read: Eye,
+  edits: FilePen,
+  open: ShieldAlert,
+  refuse: Ban,
+};
+
+/** The chosen mode's own mark, for the closed chip. */
+function ModeMark(props: {
+  mode: ModeChipProps["mode"];
+  modes: ModeChipProps["modes"];
+  size: number;
+}) {
+  const icon = (): ModeIcon =>
+    props.modes.find((option) => option.id === props.mode)?.icon ?? "ask";
+  return <Dynamic component={GLYPH[icon()]} size={props.size} aria-hidden="true" />;
 }

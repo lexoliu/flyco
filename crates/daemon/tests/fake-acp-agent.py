@@ -75,8 +75,10 @@ MODES = {
 
 # Readings of the plan's meters; each `account/rateLimits/read` consumes
 # one. A turn is the only thing that moves the five-hour window, so the
-# second answer — the one the driver asks for after turn one — is a point
-# ahead of the first.
+# second answer — the one the driver asks for after turn one — has spent
+# it: the reading itself goes nowhere (the control plane reads the plan
+# from the vendor), and what the driver must still do with it is announce
+# the limit that stops the session.
 USAGE_READINGS = [
     {
         "rateLimits": {
@@ -95,7 +97,7 @@ USAGE_READINGS = [
     {
         "rateLimits": {
             "primary": {
-                "usedPercent": 13,
+                "usedPercent": 100,
                 "windowDurationMins": 300,
                 "resetsAt": 1789002000,
             },

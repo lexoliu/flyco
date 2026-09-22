@@ -8,10 +8,10 @@ use flyco_core::{
     ApprovalView, BranchName, BudgetConfig, BudgetView, ClientEvent, ControlToDaemon, CreateApiKey,
     CreateSession, CreatedApiKey, CurrentUser, DaemonToken, DecideApproval, DesktopInputRequest,
     DesktopTakeoverRequest, EnvDocument, HarnessFeature, HarnessObservation, HarnessSessionView,
-    HarnessTui, InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry, MachineOrigin,
-    MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RegionLocation, RepoAddedBy,
-    RepoSelection, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage, ReportSpotNotice,
-    ReportStartupFailure, ReportStopping, ReportUsage, ResizeMachine, RunShell, SendMessage,
+    HarnessTui, InterruptedReason, KeepAwake, MAX_SESSION_TITLE_CHARS, MachineCatalogEntry,
+    MachineOrigin, MachineSpec, MessageOrigin, ModelChoice, ProvisioningStage, RegionLocation,
+    RepoAddedBy, RepoSelection, RepoSlug, RepoStatus, ReportModels, ReportProvisioningStage,
+    ReportSpotNotice, ReportStartupFailure, ReportStopping, ResizeMachine, RunShell, SendMessage,
     SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState, SessionSummary, SkillId,
     SkillMount, TerminalInput, TerminalSize, TurnPage, UpdateEnv, UpdateMe, UpdateSession,
     UsageLimitHit, UserId,
@@ -776,6 +776,36 @@ struct ArchiveQuery {
     discard_uncommitted: bool,
 }
 
+/// Holds a session's machine awake, or gives it back to the idle sweep.
+///
+/// The sweep stops a machine that has been idle for
+/// [`SUSPEND_AFTER_IDLE_SECS`](flyco_core::SUSPEND_AFTER_IDLE_SECS)
+/// because compute bills by the minute. It cannot see a build, a soak test
+/// or a watch loop — the session looks idle because nobody is typing — so
+/// this is how the user says one is running. The hold expires on its own:
+/// a machine kept awake for ever is a bill nobody chose.
+#[skyzen::openapi]
+async fn keep_session_awake(
+    State(user): State<CurrentUser>,
+    params: Params,
+    Json(request): Json<KeepAwake>,
+    db: Db,
+) -> Outcome<Json<SessionDetail>> {
+    hold_awake(&user, &params, request, &db).await.into()
+}
+
+async fn hold_awake(
+    user: &CurrentUser,
+    params: &Params,
+    request: KeepAwake,
+    db: &Db,
+) -> Result<Json<SessionDetail>, ApiError> {
+    let id = path_id::<SessionId>(params, "id")?;
+    sessions::keep_awake(db, user.id, id, request.minutes)
+        .await
+        .map(Json)
+}
+
 /// Archives a session, releasing its execution environment for good.
 #[skyzen::openapi]
 #[expect(
@@ -907,11 +937,19 @@ async fn confirm_manual_archive(
     Ok(())
 }
 
-/// Archives every session that has sat idle for a week.
+/// Archives every session that has sat idle past its clock.
+///
+/// The week for a session still in play, the day for one that finished —
+/// [`sessions::idle_since`] returns both sets. One failure does not stop
+/// the rest — a session whose archive was refused is left where it was
+/// and the next pass tries again, which is the honest answer to a
+/// provider or a room that could not be asked. An early return here would
+/// skip not just the remaining sessions but every cron leg after this
+/// one.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] if listing or archiving a session fails.
+/// Returns [`ApiError`] if listing the sessions itself fails.
 pub async fn archive_idle(
     db: &Db,
     config: &ApiConfig,
@@ -921,7 +959,7 @@ pub async fn archive_idle(
     at_unix: u64,
 ) -> Result<(), ApiError> {
     for idle in sessions::idle_since(db, at_unix).await? {
-        archive(
+        if let Err(error) = archive(
             db,
             config,
             github,
@@ -931,7 +969,14 @@ pub async fn archive_idle(
             idle.id,
             ArchiveKind::Automatic,
         )
-        .await?;
+        .await
+        {
+            tracing::warn!(
+                session = %idle.id,
+                %error,
+                "an idle session was not archived"
+            );
+        }
     }
     Ok(())
 }
@@ -2483,51 +2528,6 @@ async fn record_reported_models(
     Ok(NoContent)
 }
 
-/// Records how much of this session's harness plan is spent.
-///
-/// Filed by the daemon at session start and after every turn — the two
-/// moments the number can have moved — and stored against the *account*,
-/// because the plan belongs to the account and the settings page reads it
-/// there without a session. The live half goes to the room in the same
-/// call, so the composer's rings move as the turn ends rather than on the
-/// next page load.
-#[skyzen::openapi]
-async fn report_usage(
-    State(session): State<DaemonSession>,
-    Json(report): Json<ReportUsage>,
-    rooms: Rooms,
-    db: Db,
-) -> Outcome<NoContent> {
-    record_reported_usage(session.0, report, &rooms, &db)
-        .await
-        .into()
-}
-
-async fn record_reported_usage(
-    id: SessionId,
-    report: ReportUsage,
-    rooms: &Rooms,
-    db: &Db,
-) -> Result<NoContent, ApiError> {
-    // The owner and the harness come from the session row and never from
-    // the body, for the same reason they do in `record_reported_models`: an
-    // `fd_` token proves which session is calling and nothing about a user.
-    let target = sessions::provisioning_target(db, id)
-        .await?
-        .ok_or(ApiError::SessionNotFound)?;
-    harness_accounts::record_usage(db, target.user_id, target.harness, &report.windows).await?;
-    rooms
-        .broadcast(
-            db,
-            id,
-            &ClientEvent::PlanUsage {
-                windows: report.windows,
-            },
-        )
-        .await?;
-    Ok(NoContent)
-}
-
 /// Records that this session's harness has run out of plan, and stops the
 /// session until the window turns over.
 ///
@@ -2538,10 +2538,9 @@ async fn record_reported_usage(
 /// minutes before the reset, and the conversation is picked back up on the
 /// user's behalf — see [`crate::usage_limits`] for the whole sequence.
 ///
-/// A route of its own rather than a flag on [`report_usage`] beside it,
-/// because the two are read by different things and filed at different
-/// times: a usage snapshot fills the rings and is filed after every turn,
-/// and this pauses a session and is filed once per limit.
+/// The only plan reading a daemon files at all: the rings are read from
+/// the vendor by the control plane, and this is not a reading but an
+/// event — it pauses the session and schedules its return.
 ///
 /// Answers `202`: the pause is durable when this returns, and the machine
 /// the pause is about is released by the minute sweep rather than in this
@@ -3667,7 +3666,6 @@ fn daemon_routes() -> Vec<RouteNode> {
             .at(get_harness_session)
             .put(put_harness_session),
         "/v1/sessions/{id}/models".put(report_models),
-        "/v1/sessions/{id}/usage".put(report_usage),
         "/v1/sessions/{id}/usage-limit".post(report_usage_limit),
         "/v1/sessions/{id}/harness-observations".post(record_harness_observation),
         "/v1/sessions/{id}/turn-started".post(notify_turn_started),
@@ -3733,6 +3731,7 @@ fn session_routes() -> Vec<RouteNode> {
         "/v1/sessions".post(create_session).get(list_sessions),
         "/v1/sessions/{id}".at(get_session).patch(update_session),
         "/v1/sessions/{id}/archive".post(archive_session),
+        "/v1/sessions/{id}/awake".put(keep_session_awake),
         "/v1/sessions/{id}/budget".at(get_session_budget),
         "/v1/sessions/{id}/daemon-token".post(create_daemon_token),
         "/v1/sessions/{id}/events".at(get_session_events),

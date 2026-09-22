@@ -52,8 +52,6 @@ export interface MachinePickerProps {
    * the account can deploy. See [`MachineSliderProps.pending`].
    */
   pending?: string | undefined;
-  /** The line under the slider: what choosing here means. */
-  note?: JSX.Element | undefined;
   /**
    * Whether an unlinked Codespaces is offered as a path rather than left
    * unsaid. Set where a session is being chosen — a resize already knows
@@ -84,7 +82,6 @@ export default function MachinePicker(props: MachinePickerProps) {
         onSpot={props.onSpot}
         pending={props.pending}
       />
-      <Show when={props.note}>{(note) => <p class={styles.note}>{note()}</p>}</Show>
       {/* The one form the catalog cannot offer until GitHub is linked is a
           suggestion rather than a silence: the account filter's empty read
           says "no codespace" only after the user went looking. */}

@@ -8,26 +8,32 @@
  * spot and a person who has used either looks there for it.
  *
  * The panel asks the question in two views the way Codex's own picker
- * nests them: the effort slider first — the level the thumb sits on as
- * the way into the model list, the model's name under it — and the
+ * nests them: the effort rail first — the model's name at its head as the
+ * way into the model list, the level the thumb sits on under it — and the
  * agent's models behind that link, each with the harness's one-line
  * description. Picking a model that takes effort returns to its rail
  * rather than closing on the pick — the levels are the model's, so the
  * scale follows the choice — and one that takes none closes. The chip
- * reads the whole choice: `Fable`, then `· High` when a level is chosen.
+ * reads the whole choice: `Fable · High`.
+ *
+ * There is no `Default` stop. A level nobody has moved is the harness's
+ * own default where it states one and `medium` where it does not
+ * ({@link openingEffort}), and it is sent with the model rather than left
+ * out: a stop whose only meaning was "we did not say" made the chip, the
+ * rail and the run three different answers to one question.
  *
  * The list is the harness's own, served per linked account, and the chip
  * shows the model's display name rather than its id: `Fable`, not
  * `claude-fable-5-1[1m]`.
  */
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
-import { Check, ChevronRight, RotateCcw } from "lucide-solid";
+import { Check, ChevronRight } from "lucide-solid";
 import Popover from "./Popover";
 import SearchField from "./SearchField";
 import Detents from "./Detents";
 import type { ModelChoice, ModelOption } from "../api/client";
 import { cx } from "../lib/cx";
-import { choiceLabel, effortLabel, shortName } from "../lib/models";
+import { choiceLabel, effortLabel, openingEffort, shortName } from "../lib/models";
 import composer from "./Composer.module.css";
 import styles from "./ModelChip.module.css";
 
@@ -37,9 +43,6 @@ import styles from "./ModelChip.module.css";
  */
 const SEARCH_WORTH_IT = 8;
 
-/** What the leftmost detent is called: the model keeping the choice. */
-const DEFAULT_NAME = "Default";
-
 export interface ModelChipProps {
   /** The models the agent offers. */
   models: readonly ModelOption[];
@@ -48,7 +51,7 @@ export interface ModelChipProps {
   /**
    * The new choice, on a change of the model or the effort.
    *
-   * A new model starts on its own default effort rather than carrying the
+   * A new model starts on its own opening level rather than carrying the
    * old one over: the levels are the model's, and `max` on one is not a
    * level the next necessarily has.
    */
@@ -110,60 +113,40 @@ export default function ModelChip(props: ModelChipProps) {
           ) ?? null,
         );
 
-        /**
-         * The effort the drilled-in model runs at: the choice's own level
-         * once the choice names that model, `undefined` — the `Default`
-         * stop — while the pick is still on its way.
-         */
-        const effort = createMemo(() =>
-          props.choice.model === effortFor()?.id ? props.choice.effort : undefined,
-        );
-
         /** The drilled-in model's own levels, in the order the harness stated them. */
-        const efforts = createMemo(() => effortFor()?.efforts ?? []);
+        const stops = createMemo<readonly string[]>(() => effortFor()?.efforts ?? []);
 
         /**
-         * The rail's stops: `Default` first — the model keeps the choice —
-         * then the harness's levels. `null` is the stop that is not a level.
+         * The level the thumb sits on: the choice's own once the choice
+         * names the drilled-in model, else that model's opening level —
+         * which is what a session with no level stated runs at, so the
+         * rail reads true while a pick is still on its way.
          */
-        const stops = createMemo<readonly (string | null)[]>(() => [null, ...efforts()]);
-
-        /** The stop the thumb sits on; a chosen effort the list lost parks at `Default`. */
-        const position = createMemo(() => {
-          const level = effort();
-          if (level === undefined || level === null) {
-            return 0;
-          }
-          return Math.max(0, stops().indexOf(level));
-        });
-
-        /**
-         * What the stop the thumb sits on is called: the level chosen, or
-         * `Default` where the model keeps the choice.
-         */
-        const reading = createMemo(() => {
-          const level = effort();
-          return level === undefined || level === null ? DEFAULT_NAME : effortLabel(level);
-        });
-
-        /**
-         * The line under the level: the model it belongs to, and — where
-         * the harness says which level `Default` means — what the choice
-         * resolves to.
-         */
-        const subline = createMemo(() => {
+        const level = createMemo(() => {
           const option = effortFor();
           if (option === null) {
-            return "";
+            return undefined;
           }
-          const name = shortName(option);
-          const fallback = option.default_effort;
-          const level = effort();
-          return level === undefined || level === null
-            ? fallback === undefined || fallback === null
-              ? name
-              : `${name} · ${effortLabel(fallback)}`
-            : name;
+          const chosen = props.choice.model === option.id ? props.choice.effort : undefined;
+          return chosen ?? openingEffort(option);
+        });
+
+        /** Where on the rail that level sits; an unknown level parks at the first stop. */
+        const position = createMemo(() => {
+          const chosen = level();
+          return chosen === undefined ? 0 : Math.max(0, stops().indexOf(chosen));
+        });
+
+        /** What the stop the thumb sits on is called. */
+        const reading = createMemo(() => {
+          const chosen = level();
+          return chosen === undefined ? "" : effortLabel(chosen);
+        });
+
+        /** The head of the rail: the model whose levels it runs on. */
+        const modelName = createMemo(() => {
+          const option = effortFor();
+          return option === null ? "" : shortName(option);
         });
 
         /**
@@ -187,7 +170,7 @@ export default function ModelChip(props: ModelChipProps) {
         // panel — the account's model list refreshing — drops the view
         // back to the list rather than drawing a rail of nothing.
         createEffect(() => {
-          if (effortFor() !== null && efforts().length === 0) {
+          if (effortFor() !== null && stops().length === 0) {
             setEffortFor(null);
           }
         });
@@ -203,10 +186,15 @@ export default function ModelChip(props: ModelChipProps) {
          * the effort it already runs at.
          */
         function pick(option: ModelOption): void {
+          const opening = openingEffort(option);
           if (option.id !== props.choice.model) {
-            props.onChoose({ model: option.id });
+            props.onChoose(
+              opening === undefined
+                ? { model: option.id }
+                : { model: option.id, effort: opening },
+            );
           }
-          if ((option.efforts?.length ?? 0) > 0) {
+          if (option.efforts.length > 0) {
             setEffortFor(option);
           } else {
             close();
@@ -219,14 +207,12 @@ export default function ModelChip(props: ModelChipProps) {
           if (stop === undefined || option === null) {
             return;
           }
-          props.onChoose(
-            stop === null ? { model: option.id } : { model: option.id, effort: stop },
-          );
+          props.onChoose({ model: option.id, effort: stop });
         }
 
         return (
           <Show
-            when={effortFor() !== null && efforts().length > 0}
+            when={effortFor() !== null && stops().length > 0}
             fallback={
               <div
                 class={composer.popover}
@@ -309,21 +295,11 @@ export default function ModelChip(props: ModelChipProps) {
                   aria-label="Choose a model"
                   onClick={() => setEffortFor(null)}
                 >
-                  {reading()}
+                  {modelName()}
                   <ChevronRight size={14} aria-hidden="true" />
                 </button>
-                <button
-                  type="button"
-                  class={styles.reset}
-                  aria-label="Reset effort"
-                  title="Reset effort"
-                  disabled={position() === 0}
-                  onClick={() => move(0)}
-                >
-                  <RotateCcw size={14} aria-hidden="true" />
-                </button>
               </div>
-              <p class={styles.effortModel}>{subline()}</p>
+              <p class={styles.effortReading}>{reading()}</p>
               <div class={styles.control}>
                 <Detents
                   count={stops().length}
@@ -333,8 +309,8 @@ export default function ModelChip(props: ModelChipProps) {
                   onMove={move}
                 />
                 <div class={styles.ends}>
-                  <span>{DEFAULT_NAME}</span>
-                  <span>{effortLabel(efforts()[efforts().length - 1] ?? "")}</span>
+                  <span>{effortLabel(stops()[0] ?? "")}</span>
+                  <span>{effortLabel(stops()[stops().length - 1] ?? "")}</span>
                 </div>
               </div>
             </div>

@@ -16,6 +16,7 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
 import {
   Archive,
+  Coffee,
   Copy,
   FolderGit2,
   MoreHorizontal,
@@ -35,8 +36,8 @@ import { listRepos, type MachineView, type SessionDetail } from "../api/client";
 import type { ConnectionState } from "../api/relay";
 import { createQuery } from "../lib/query";
 import { cx } from "../lib/cx";
-import { MACHINE_STATE_LABEL } from "../lib/machines";
-import { PROVIDER_LABEL } from "../lib/providers";
+import { formatDuration } from "../lib/duration";
+import { relativeTime } from "../lib/relativeTime";
 import styles from "./SessionHeader.module.css";
 
 /**
@@ -70,6 +71,14 @@ export interface SessionHeaderProps {
   archiving: boolean;
   onStartMachine: () => void;
   onStopMachine: () => void;
+  /**
+   * Holds the machine awake for `minutes`, or ends the hold with `null`.
+   *
+   * The idle sweep cannot see a build or a soak test — the session looks
+   * idle because the work is the machine's — so this is how the user says
+   * one is running.
+   */
+  onKeepAwake: (minutes: number | null) => void;
   /** Whether the drawer of docs/ux.md §9.4 is open. */
   drawerOpen: boolean;
   /** Opens or closes it; the header holds the toggle, the page holds the state. */
@@ -220,6 +229,11 @@ export default function SessionHeader(props: SessionHeaderProps) {
         >
           {(close) => (
             <ul class={styles.menu}>
+              <KeepAwake
+                until={props.session?.awake_until_unix ?? null}
+                onChoose={(minutes) => props.onKeepAwake(minutes)}
+              />
+              <li class={styles.menuDivider} role="presentation" />
               <li>
                 <button
                   type="button"
@@ -311,11 +325,15 @@ export default function SessionHeader(props: SessionHeaderProps) {
                   {copied() ? "Copied session id" : "Copy session id"}
                 </button>
               </li>
-              <Show when={props.machine}>
-                {(machine) => (
+              {/*
+                The machine is already named on the composer's own chip,
+                so the foot of this menu carries the one fact nothing else
+                on the page states: when the session was last touched.
+              */}
+              <Show when={props.session}>
+                {(session) => (
                   <li class={styles.menuFooter}>
-                    {PROVIDER_LABEL[machine().spec.provider]} · {machine().region} ·{" "}
-                    {MACHINE_STATE_LABEL[machine().state]}
+                    Last active {relativeTime(session().last_active_unix, Date.now())}
                   </li>
                 )}
               </Show>
@@ -324,6 +342,94 @@ export default function SessionHeader(props: SessionHeaderProps) {
         </Popover>
       </div>
     </header>
+  );
+}
+
+/** Seconds in a minute, the granularity the hold's time left is read at. */
+const MINUTE = 60;
+
+/** The holds the menu offers, in the order they are read. */
+const HOLDS: readonly { minutes: number; label: string }[] = [
+  { minutes: 60, label: "1h" },
+  { minutes: 4 * 60, label: "4h" },
+  { minutes: 8 * 60, label: "8h" },
+];
+
+/**
+ * The menu's first row: keep this session's machine awake.
+ *
+ * A machine nobody types into for half an hour is stopped, because compute
+ * bills by the minute. That is the wrong answer exactly while the machine
+ * is the one working — a build, a soak test, a watch loop — and flyco
+ * cannot tell that from the outside, so the user says so here.
+ *
+ * The durations sit in the same menu rather than behind a flyout: the row
+ * is one question with three answers, and a second surface to hover into
+ * would be a longer way to the same three buttons. A hold that is running
+ * reads as the time it has left, and the same row ends it.
+ */
+function KeepAwake(props: { until: number | null; onChoose: (minutes: number | null) => void }) {
+  const [open, setOpen] = createSignal(false);
+  const held = () => {
+    const until = props.until;
+    if (until === null) {
+      return null;
+    }
+    const left = until - Math.floor(Date.now() / 1000);
+    if (left <= 0) {
+      return null;
+    }
+    // Time left, rounded up to the minute. `formatDuration` truncates,
+    // which is right for a duration that has finished and wrong for one
+    // counting down: the round trip that sets an 8h hold costs a second,
+    // and a user who just pressed `8h` would be told `7h 59m`.
+    return left < MINUTE ? left : Math.ceil(left / MINUTE) * MINUTE;
+  };
+
+  return (
+    <li>
+      <button
+        type="button"
+        class={styles.menuItem}
+        aria-expanded={open() || held() !== null}
+        onClick={() => setOpen((was) => !was)}
+      >
+        <Coffee size={14} aria-hidden="true" />
+        <Show when={held()} fallback="Keep machine awake">
+          {(left) => <>Awake for {formatDuration(left())}</>}
+        </Show>
+      </button>
+      <Show when={open() || held() !== null}>
+        <div class={styles.holds} role="group" aria-label="Keep machine awake">
+          <For each={HOLDS}>
+            {(hold) => (
+              <button
+                type="button"
+                class={styles.hold}
+                onClick={() => {
+                  props.onChoose(hold.minutes);
+                  setOpen(false);
+                }}
+              >
+                {hold.label}
+              </button>
+            )}
+          </For>
+          <Show when={held() !== null}>
+            <button
+              type="button"
+              class={styles.hold}
+              onClick={() => {
+                props.onChoose(null);
+                setOpen(false);
+              }}
+            >
+              Off
+            </button>
+          </Show>
+        </div>
+      </Show>
+    </li>
   );
 }
 

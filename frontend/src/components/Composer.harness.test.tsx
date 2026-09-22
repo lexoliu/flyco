@@ -17,7 +17,7 @@ const singleAccount: Readiness = {
       linked_at_unix: 1_787_000_000,
       expires_at_unix: null,
       models: [],
-      usage: [],
+      usage: { state: "unmetered" as const },
     },
   ],
   compute: () => [],
@@ -37,7 +37,7 @@ const duplicateHarness: Readiness = {
       linked_at_unix: 1_787_000_000,
       expires_at_unix: null,
       models: [],
-      usage: [],
+      usage: { state: "unmetered" as const },
     },
     {
       id: "harness-2",
@@ -46,7 +46,7 @@ const duplicateHarness: Readiness = {
       linked_at_unix: 1_787_000_001,
       expires_at_unix: null,
       models: [],
-      usage: [],
+      usage: { state: "unmetered" as const },
     },
   ],
 };

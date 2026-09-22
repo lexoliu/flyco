@@ -14,6 +14,7 @@
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { createQuery } from "../../lib/query";
 import ProblemNotice from "../../components/ProblemNotice";
+import Skeleton from "../../components/Skeleton";
 import DiffView from "../../components/DiffView";
 import MemoryOutliner from "./MemoryOutliner";
 import {
@@ -64,16 +65,12 @@ export default function InstructionsSection() {
     <section class={styles.section}>
       <header class={styles.sectionHead}>
         <h2>Instructions</h2>
-        <p class={styles.lede}>
-          What every agent reads before it starts: one shared AGENTS.md, provisioned onto each
-          session's machine alongside whatever the repository carries, and a tree of notes.
-        </p>
       </header>
 
       <div class={styles.group}>
         <p class={styles.groupLabel}>AGENTS.md</p>
         <ProblemNotice error={doc.error} />
-        <Show when={!doc.loading}>
+        <Show when={doc.settled} fallback={<Skeleton lines={5} />}>
           <article class={styles.card}>
             <div class={styles.field}>
               {/* The group above already says AGENTS.md; a visible "Content"

@@ -1,0 +1,11 @@
+-- Flyco control plane, issue #381: a plan's usage is read from the vendor
+-- while a request is answered, never stored.
+--
+-- `harness_accounts.usage_json` held the last snapshot a session's daemon
+-- filed. Nothing expired it, so an account with no session running was
+-- served a reading days old: every window whose reset had passed rendered
+-- as "resets now", and the composer's ring painted a spent week over a
+-- plan that was fine. A snapshot of a number that moves on its own is
+-- wrong the moment it is written; the control plane now asks Anthropic on
+-- the request that draws it, and there is nothing left to go stale.
+ALTER TABLE harness_accounts DROP COLUMN usage_json;

@@ -1205,7 +1205,7 @@
     "/v1/harness-accounts": {
       "get": {
         "summary": "Lists the caller's linked harness accounts.",
-        "description": "Lists the caller's linked harness accounts.",
+        "description": "Lists the caller's linked harness accounts.\n\nCosts one vendor subrequest per account whose plan flyco can read —\none, in practice, since a user has at most one Claude account — because\n[`usage`] reads the plan live rather than serving a stored reading.",
         "operationId": "flyco_api::harness_accounts::list_harness_accounts",
         "responses": {
           "200": {
@@ -1261,11 +1261,8 @@
                         "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                       },
                       "usage": {
-                        "type": "array",
-                        "items": {
-                          "$ref": "#/components/schemas/UsageWindow"
-                        },
-                        "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
+                        "$ref": "#/components/schemas/PlanUsage",
+                        "description": "How much of this account's plan is spent, read from the vendor\nwhile answering this request.\n\nCarried on the account for the same reason [`Self::models`] is —\nSettings reads the account and nothing else — and it is what the\nsettings row draws its bars from. Never a stored reading: a plan\nmoves whether or not flyco is watching, so anything but a live one\nis a number that was true once and is drawn as if it were true now."
                       }
                     }
                   }
@@ -1359,11 +1356,8 @@
                       "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                     },
                     "usage": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/UsageWindow"
-                      },
-                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
+                      "$ref": "#/components/schemas/PlanUsage",
+                      "description": "How much of this account's plan is spent, read from the vendor\nwhile answering this request.\n\nCarried on the account for the same reason [`Self::models`] is —\nSettings reads the account and nothing else — and it is what the\nsettings row draws its bars from. Never a stored reading: a plan\nmoves whether or not flyco is watching, so anything but a live one\nis a number that was true once and is drawn as if it were true now."
                     }
                   }
                 }
@@ -1456,11 +1450,8 @@
                       "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                     },
                     "usage": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/UsageWindow"
-                      },
-                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
+                      "$ref": "#/components/schemas/PlanUsage",
+                      "description": "How much of this account's plan is spent, read from the vendor\nwhile answering this request.\n\nCarried on the account for the same reason [`Self::models`] is —\nSettings reads the account and nothing else — and it is what the\nsettings row draws its bars from. Never a stored reading: a plan\nmoves whether or not flyco is watching, so anything but a live one\nis a number that was true once and is drawn as if it were true now."
                     }
                   }
                 }
@@ -1643,11 +1634,8 @@
                       "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                     },
                     "usage": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/UsageWindow"
-                      },
-                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
+                      "$ref": "#/components/schemas/PlanUsage",
+                      "description": "How much of this account's plan is spent, read from the vendor\nwhile answering this request.\n\nCarried on the account for the same reason [`Self::models`] is —\nSettings reads the account and nothing else — and it is what the\nsettings row draws its bars from. Never a stored reading: a plan\nmoves whether or not flyco is watching, so anything but a live one\nis a number that was true once and is drawn as if it were true now."
                     }
                   }
                 }
@@ -1740,11 +1728,8 @@
                       "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
                     },
                     "usage": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/UsageWindow"
-                      },
-                      "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
+                      "$ref": "#/components/schemas/PlanUsage",
+                      "description": "How much of this account's plan is spent, read from the vendor\nwhile answering this request.\n\nCarried on the account for the same reason [`Self::models`] is —\nSettings reads the account and nothing else — and it is what the\nsettings row draws its bars from. Never a stored reading: a plan\nmoves whether or not flyco is watching, so anything but a live one\nis a number that was true once and is drawn as if it were true now."
                     }
                   }
                 }
@@ -5077,6 +5062,15 @@
                         "$ref": "#/components/schemas/SessionActivity",
                         "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
                       },
+                      "awake_until_unix": {
+                        "type": [
+                          "integer",
+                          "null"
+                        ],
+                        "format": "int64",
+                        "description": "Until when the idle sweep must leave this session's machine alone,\nseconds since the Unix epoch.\n\n`None` for a session on the ordinary clock, which is almost all of\nthem. A machine is stopped after\n[`SUSPEND_AFTER_IDLE_SECS`] because compute bills by the minute,\nand that is wrong exactly when the agent is doing something the\ncontrol plane cannot see it doing — a long build, a soak test, a\nwatch loop — so the user holds the machine open for a while. An\ninstant rather than a flag: a machine held awake for ever is a bill\nnobody chose, and the hold has to expire on its own.",
+                        "minimum": 0
+                      },
                       "computer_use": {
                         "type": "boolean",
                         "description": "Whether the session may have a desktop.\n\nOn the summary rather than only on [`SessionDetail`] because the\n`Screen` drawer entry is drawn from it: a session without the flag\nhas no panel to open. Every session created today carries it — the\nstack ships in the image and is not a choice at create — but rows\nfrom before that change record 0, and a live session can still\ntoggle it through [`UpdateSession::computer_use`]."
@@ -6029,6 +6023,94 @@
             }
           }
         ],
+        "responses": {
+          "200": {
+            "description": "Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SessionSummary",
+                      "description": "Everything a list entry carries."
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "budget"
+                      ],
+                      "properties": {
+                        "budget": {
+                          "$ref": "#/components/schemas/BudgetView",
+                          "description": "Budget accounting as of this request."
+                        },
+                        "failure": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Why the session is [`SessionState::Failed`], in the provider's own\nwords where it has any.\n\n`None` for every other state. A failed session that could not say\nwhy would leave the user with a dead session and no idea whether to\nretry it, pick another region, or ask for a quota increase."
+                        },
+                        "usage_limit": {
+                          "oneOf": [
+                            {
+                              "type": "null"
+                            },
+                            {
+                              "$ref": "#/components/schemas/UsageLimitPause",
+                              "description": "What a session waiting out a harness usage limit is waiting for.\n\n`Some` exactly while\n[`paused_reason`](SessionSummary::paused_reason) is\n[`PausedReason::UsageLimit`], and on the detail rather than the\nsummary because this is the page's story and not the rail's dot: a\nlist row says the session is waiting, and the page says which window,\nuntil when, and whether the machine is still costing anything.\n\nIt outlives the [`Paused`](SessionState::Paused) state on purpose.\nThe wake runs through [`Provisioning`](SessionState::Provisioning),\nand this is the only thing that tells that provisioning apart from a\nfirst one — the same job [`InterruptedReason`] does for a\nreclamation."
+                            }
+                          ]
+                        }
+                      }
+                    }
+                  ],
+                  "description": "A single session, with its budget."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/sessions/{id}/awake": {
+      "put": {
+        "summary": "Holds a session's machine awake, or gives it back to the idle sweep.",
+        "description": "Holds a session's machine awake, or gives it back to the idle sweep.\n\nThe sweep stops a machine that has been idle for\n[`SUSPEND_AFTER_IDLE_SECS`](flyco_core::SUSPEND_AFTER_IDLE_SECS)\nbecause compute bills by the minute. It cannot see a build, a soak test\nor a watch loop — the session looks idle because nobody is typing — so\nthis is how the user says one is running. The hold expires on its own:\na machine kept awake for ever is a bill nobody chose.",
+        "operationId": "flyco_api::app::keep_session_awake",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "Extractor arguments",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "description": "Request body of `PUT /v1/sessions/{id}/awake`.\n\nA route of its own rather than a field on [`UpdateSession`]: this is\nnot a property of the session the user is editing, it is an instruction\nto the idle sweep with a clock attached, and the two are asked for from\ndifferent places and answered at different times.",
+                "properties": {
+                  "minutes": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ],
+                    "format": "int32",
+                    "description": "How much longer the machine must not be suspended for idleness, in\nminutes, up to [`KEEP_AWAKE_MAX_MINUTES`].\n\n`None` ends the hold and gives the machine back to the sweep.",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "Response",
@@ -8370,56 +8452,10 @@
         }
       }
     },
-    "/v1/sessions/{id}/usage": {
-      "put": {
-        "summary": "Records how much of this session's harness plan is spent.",
-        "description": "Records how much of this session's harness plan is spent.\n\nFiled by the daemon at session start and after every turn — the two\nmoments the number can have moved — and stored against the *account*,\nbecause the plan belongs to the account and the settings page reads it\nthere without a session. The live half goes to the room in the same\ncall, so the composer's rings move as the turn ends rather than on the\nnext page load.",
-        "operationId": "flyco_api::app::report_usage",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "description": "Extractor arguments",
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "description": "Request body of `PUT /v1/sessions/{id}/usage`.\n\nWhat a session's daemon reports when its harness answers how much of the\nplan is spent: at start, and after every turn. Recorded against the\naccount rather than the session, because the plan is the account's and\ntwo sessions on one account share it.",
-                "required": [
-                  "windows"
-                ],
-                "properties": {
-                  "windows": {
-                    "type": "array",
-                    "items": {
-                      "$ref": "#/components/schemas/UsageWindow"
-                    },
-                    "description": "Every window the harness reported, in no particular order."
-                  }
-                }
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Done. There is nothing to return."
-          }
-        }
-      }
-    },
     "/v1/sessions/{id}/usage-limit": {
       "post": {
         "summary": "Records that this session's harness has run out of plan, and stops the session until the window turns over.",
-        "description": "Records that this session's harness has run out of plan, and stops the\nsession until the window turns over.\n\nThe one thing a daemon reports that stops the session rather than\ndescribing it: the harness has refused a turn because a rolling window of\nthe account's plan is spent, and there is nothing to do until it resets.\nThe machine is released so the wait costs nothing and started again ten\nminutes before the reset, and the conversation is picked back up on the\nuser's behalf — see [`crate::usage_limits`] for the whole sequence.\n\nA route of its own rather than a flag on [`report_usage`] beside it,\nbecause the two are read by different things and filed at different\ntimes: a usage snapshot fills the rings and is filed after every turn,\nand this pauses a session and is filed once per limit.\n\nAnswers `202`: the pause is durable when this returns, and the machine\nthe pause is about is released by the minute sweep rather than in this\nrequest.",
+        "description": "Records that this session's harness has run out of plan, and stops the\nsession until the window turns over.\n\nThe one thing a daemon reports that stops the session rather than\ndescribing it: the harness has refused a turn because a rolling window of\nthe account's plan is spent, and there is nothing to do until it resets.\nThe machine is released so the wait costs nothing and started again ten\nminutes before the reset, and the conversation is picked back up on the\nuser's behalf — see [`crate::usage_limits`] for the whole sequence.\n\nThe only plan reading a daemon files at all: the rings are read from\nthe vendor by the control plane, and this is not a reading but an\nevent — it pauses the session and schedules its return.\n\nAnswers `202`: the pause is durable when this returns, and the machine\nthe pause is about is released by the minute sweep rather than in this\nrequest.",
         "operationId": "flyco_api::app::report_usage_limit",
         "parameters": [
           {
@@ -8437,7 +8473,7 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "description": "Request body of `POST /v1/sessions/{id}/usage-limit`.\n\nThe one fact a session's daemon holds that stops it working: the\nharness refused a turn because a window of the account's plan is spent.\nReported separately from [`ReportUsage`] beside it because the two are\nread by different things — a snapshot fills the rings, and this pauses\nthe session and schedules its return — and because a snapshot is filed\nafter every turn while this is filed once per limit.\n\nThe control plane refuses a window that names no reset: the whole of\nwhat it does with this is stop the machine until a stated instant, and\nthere is nothing to schedule around a limit with no end.",
+                "description": "Request body of `POST /v1/sessions/{id}/usage-limit`.\n\nThe one fact a session's daemon holds that stops it working: the\nharness refused a turn because a window of the account's plan is spent.\nThe only plan reading the daemon files at all — the rings are read from\nthe vendor by the control plane ([`PlanUsage`]), and this is not a\nreading but an event: it pauses the session and schedules its return.\n\nThe control plane refuses a window that names no reset: the whole of\nwhat it does with this is stop the machine until a stated instant, and\nthere is nothing to schedule around a limit with no end.",
                 "required": [
                   "window"
                 ],
@@ -11621,11 +11657,8 @@
             "description": "The models a session on this account may run on.\n\nWhat the account's last session reported its harness offers, and\n[`builtin_models`] until one has. Carried on the account rather than\nasked for separately because the composer picks a model *while*\nchoosing which account to open the session on, and a second request\nper account would be a picker that renders after the form it belongs\nto."
           },
           "usage": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/UsageWindow"
-            },
-            "description": "How much of this account's plan is spent, per rolling window.\n\nThe last snapshot a session on this account filed, and empty until\none has. Carried on the account for the same reason\n[`Self::models`] is — Settings reads the account and nothing else —\nand it is what the settings row draws its bars from."
+            "$ref": "#/components/schemas/PlanUsage",
+            "description": "How much of this account's plan is spent, read from the vendor\nwhile answering this request.\n\nCarried on the account for the same reason [`Self::models`] is —\nSettings reads the account and nothing else — and it is what the\nsettings row draws its bars from. Never a stored reading: a plan\nmoves whether or not flyco is watching, so anything but a live one\nis a number that was true once and is drawn as if it were true now."
           }
         }
       },
@@ -12547,6 +12580,21 @@
           }
         ],
         "description": "What came of one container job on a host.\n\nA sum rather than a status and a nullable pair, because \"the container\nis up and here is what it is called\" and \"podman refused\" are different\nanswers and only one of them names a container."
+      },
+      "KeepAwake": {
+        "type": "object",
+        "description": "Request body of `PUT /v1/sessions/{id}/awake`.\n\nA route of its own rather than a field on [`UpdateSession`]: this is\nnot a property of the session the user is editing, it is an instruction\nto the idle sweep with a clock attached, and the two are asked for from\ndifferent places and answered at different times.",
+        "properties": {
+          "minutes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How much longer the machine must not be suspended for idleness, in\nminutes, up to [`KEEP_AWAKE_MAX_MINUTES`].\n\n`None` ends the hold and gives the machine back to the sweep.",
+            "minimum": 0
+          }
+        }
       },
       "LinkHarnessAccount": {
         "type": "object",
@@ -13483,6 +13531,69 @@
           "auto"
         ]
       },
+      "PlanUsage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The windows the vendor stated, as of this request.\n\nEmpty when the vendor answered and named no window, which is a\nplan with nothing to draw rather than a failure to read one.",
+            "required": [
+              "windows",
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "windows"
+                ]
+              },
+              "windows": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/UsageWindow"
+                },
+                "description": "Every window the vendor stated, in no particular order; the UI\nsorts them by\n[`window_minutes`](crate::wire::UsageWindow::window_minutes)."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "There is no plan behind this credential.\n\nAn API key bills per token and has no rolling window, so there is\nnothing to read and nothing to draw.",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unmetered"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The vendor could not be read, and why.\n\nThe plan is whatever it was; flyco simply does not know it, and\nsays so rather than drawing a ring at zero.",
+            "required": [
+              "reason",
+              "state"
+            ],
+            "properties": {
+              "reason": {
+                "type": "string",
+                "description": "What went wrong, in the vendor's own words where it gave any."
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What flyco can say about one account's plan right now.\n\nThree outcomes, and they are not interchangeable: a plan flyco read, a\ncredential with no plan behind it, and a vendor that would not answer.\nDrawing the last two as an empty set of windows is what made a dead\nplan look like an untouched one — so the state is on the wire and the\nUI says which of the three it is."
+      },
       "Poll": {
         "type": "object",
         "description": "Query the poll presents: `?s=<poll_token>`.",
@@ -14296,22 +14407,6 @@
           }
         }
       },
-      "ReportUsage": {
-        "type": "object",
-        "description": "Request body of `PUT /v1/sessions/{id}/usage`.\n\nWhat a session's daemon reports when its harness answers how much of the\nplan is spent: at start, and after every turn. Recorded against the\naccount rather than the session, because the plan is the account's and\ntwo sessions on one account share it.",
-        "required": [
-          "windows"
-        ],
-        "properties": {
-          "windows": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/UsageWindow"
-            },
-            "description": "Every window the harness reported, in no particular order."
-          }
-        }
-      },
       "ResizeMachine": {
         "type": "object",
         "description": "Request body of `POST /v1/sessions/{id}/machine/resize`.\n\nThe disk survives a resize; only compute is replaced. The provider and\nregion are not part of this, because moving a machine between them would\nmean a new disk, which is a new session's problem rather than a resize.",
@@ -14553,6 +14648,15 @@
           "activity": {
             "$ref": "#/components/schemas/SessionActivity",
             "description": "What it is doing, for an [`Active`](SessionState::Active) session.\n\nWhat lets the home list say `Working` and `Needs input` rather than\nreading every running session as `Idle`: the facts behind those two\nlive in the relay and in the `approvals` table, and this is the\ncontrol plane's own answer, carried on the row the list is built\nfrom (docs/ux.md §6).\n\nMeaningless for every other state, and the UI ignores it there — a\nsession keeps the activity it had when it was paused, interrupted or\narchived rather than being reset to a position it was never in."
+          },
+          "awake_until_unix": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Until when the idle sweep must leave this session's machine alone,\nseconds since the Unix epoch.\n\n`None` for a session on the ordinary clock, which is almost all of\nthem. A machine is stopped after\n[`SUSPEND_AFTER_IDLE_SECS`] because compute bills by the minute,\nand that is wrong exactly when the agent is doing something the\ncontrol plane cannot see it doing — a long build, a soak test, a\nwatch loop — so the user holds the machine open for a while. An\ninstant rather than a flag: a machine held awake for ever is a bill\nnobody chose, and the hold has to expire on its own.",
+            "minimum": 0
           },
           "computer_use": {
             "type": "boolean",
@@ -15251,7 +15355,7 @@
       },
       "UsageLimitHit": {
         "type": "object",
-        "description": "Request body of `POST /v1/sessions/{id}/usage-limit`.\n\nThe one fact a session's daemon holds that stops it working: the\nharness refused a turn because a window of the account's plan is spent.\nReported separately from [`ReportUsage`] beside it because the two are\nread by different things — a snapshot fills the rings, and this pauses\nthe session and schedules its return — and because a snapshot is filed\nafter every turn while this is filed once per limit.\n\nThe control plane refuses a window that names no reset: the whole of\nwhat it does with this is stop the machine until a stated instant, and\nthere is nothing to schedule around a limit with no end.",
+        "description": "Request body of `POST /v1/sessions/{id}/usage-limit`.\n\nThe one fact a session's daemon holds that stops it working: the\nharness refused a turn because a window of the account's plan is spent.\nThe only plan reading the daemon files at all — the rings are read from\nthe vendor by the control plane ([`PlanUsage`]), and this is not a\nreading but an event: it pauses the session and schedules its return.\n\nThe control plane refuses a window that names no reset: the whole of\nwhat it does with this is stop the machine until a stated instant, and\nthere is nothing to schedule around a limit with no end.",
         "required": [
           "window"
         ],

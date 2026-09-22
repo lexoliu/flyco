@@ -109,8 +109,11 @@ export default function McpServerForm(props: McpServerFormProps) {
             value={transport()}
             onChange={(event) => setTransport(event.currentTarget.value as Transport)}
           >
-            <option value="stdio">stdio (a process on the machine)</option>
-            <option value="http">http (a remote endpoint)</option>
+            {/* Short enough to read whole: the select is half of a 560px
+                dialog, and `stdio (a process on the machine)` lost its
+                closing paren behind the chevron. */}
+            <option value="stdio">stdio · runs on the machine</option>
+            <option value="http">http · a remote endpoint</option>
           </select>
         </div>
       </div>

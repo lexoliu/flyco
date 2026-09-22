@@ -178,7 +178,6 @@ async fn announcements(outputs: &mut mpsc::Receiver<SessionOutput>) {
     let _ = next(outputs, "capabilities").await;
     let _ = next(outputs, "models").await;
     let _ = next(outputs, "commands").await;
-    let _ = next(outputs, "plan usage").await;
 }
 
 #[tokio::test]
@@ -246,21 +245,6 @@ async fn a_session_announces_itself_without_anyone_typing() {
             .description
             .starts_with("Comprehensive Cloudflare")
     );
-
-    // And how much of the plan is already gone, before the session has
-    // cost anything: the composer's rings are right for the first message
-    // rather than only after the first turn has been paid for.
-    let SessionOutput::PlanUsage { windows } = next(&mut outputs, "plan usage").await else {
-        panic!("a session must announce what is left of its plan");
-    };
-    assert_eq!(
-        windows
-            .iter()
-            .map(|window| (window.label.as_str(), window.used_percent))
-            .collect::<Vec<_>>(),
-        [("5-hour (primary)", 12), ("Weekly (secondary)", 40)]
-    );
-    assert_eq!(windows[0].resets_at_unix, Some(1_789_002_000));
 
     session.shutdown().await.expect("shut the session down");
 }
@@ -441,18 +425,37 @@ async fn a_turn_runs_from_user_message_to_completion() {
     );
     assert_eq!(usage.context.expect("checked above").used_tokens, 18);
 
-    // The turn moved the five-hour window: the driver asks again after
-    // every turn, and the agent's second reading is a point ahead.
-    let SessionOutput::PlanUsage { windows } = next(&mut outputs, "plan usage").await else {
-        panic!("a post-turn usage read must reach the session");
+    // The window the turn left behind, reported unasked: a session whose
+    // machine is suspended later still says where its context went,
+    // instead of offering to wake one to find out.
+    let SessionOutput::Event {
+        event: HarnessEvent::ContextUsage { usage: context },
+    } = next(&mut outputs, "context usage").await
+    else {
+        panic!("a finished turn must state what the window holds");
     };
     assert_eq!(
-        windows
-            .iter()
-            .map(|window| (window.label.as_str(), window.used_percent))
-            .collect::<Vec<_>>(),
-        [("5-hour (primary)", 13), ("Weekly (secondary)", 40)]
+        context
+            .window
+            .expect("the agent reported a window")
+            .size_tokens,
+        200_000
     );
+
+    // The turn spent the five-hour window. The reading itself is filed
+    // nowhere — the control plane reads the plan from the vendor while it
+    // draws it — and what the driver still owes the conversation is the
+    // limit: the session is stopped until the window turns over, and the
+    // transcript has to say which limit stopped it.
+    let SessionOutput::Event {
+        event: HarnessEvent::UsageLimited { window },
+    } = next(&mut outputs, "usage limited").await
+    else {
+        panic!("a spent window must reach the conversation");
+    };
+    assert_eq!(window.label, "5-hour (primary)");
+    assert_eq!(window.used_percent, 100);
+    assert_eq!(window.resets_at_unix, Some(1_789_002_000));
 
     session.shutdown().await.expect("shut the session down");
 }

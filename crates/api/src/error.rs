@@ -987,6 +987,16 @@ pub enum ApiError {
         state: ApprovalState,
     },
 
+    /// The hold asked for is longer than a machine may be held awake.
+    #[error(
+        "a machine can be held awake for at most {maximum_minutes} minutes at a time",
+        status = StatusCode::UNPROCESSABLE_ENTITY
+    )]
+    KeepAwakeTooLong {
+        /// The longest hold flyco accepts, in minutes.
+        maximum_minutes: u32,
+    },
+
     /// The session is not running, so it cannot be driven.
     #[error(
         "this session is {state:?}, and only an active session can be driven",
@@ -1226,9 +1236,12 @@ pub enum ApiError {
     /// A daemon speaks a wire protocol version this control plane does not.
     ///
     /// `409` rather than `426`: nothing here can be upgraded in place — the
-    /// daemon has to be replaced by a build that speaks this version.
+    /// daemon has to be replaced by a build that speaks this version. The
+    /// detail says the one thing that replaces it, because the two numbers
+    /// alone leave a browser user holding a dead session and no verb.
     #[error(
-        "the daemon speaks wire protocol {daemon}, this control plane speaks {control}",
+        "the daemon speaks wire protocol {daemon} but this control plane speaks {control}; \
+         resume the session so flyco builds it a machine on the daemon this control plane accepts",
         status = StatusCode::CONFLICT
     )]
     ProtocolMismatch {
@@ -1695,6 +1708,7 @@ impl ApiError {
             Self::SessionDaemonOffline => "session-daemon-offline",
             Self::DesktopWatcherGone => "desktop-watcher-gone",
             Self::DesktopTakeoverRequired => "desktop-takeover-required",
+            Self::KeepAwakeTooLong { .. } => "keep-awake-too-long",
             Self::WorkdirTimeout => "workdir-timeout",
             Self::PathNotFound { .. } => "path-not-found",
             Self::PathOutsideCheckout { .. } => "path-outside-checkout",

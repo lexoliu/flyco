@@ -1160,7 +1160,9 @@ struct PendingPermission {
 enum PendingCall {
     /// A compaction; its caller waits on the ack.
     Compact(oneshot::Sender<Result<(), AcpError>>),
-    /// A plan-usage read; nobody waits on it, its answer becomes `PlanUsage`.
+    /// A plan-usage read; nobody waits on it, and what it answers is only
+    /// read for the limit it may announce — the rings are the control
+    /// plane's, read from the vendor while a page is built.
     Usage,
 }
 
@@ -1351,24 +1353,7 @@ impl Driver {
             }
             DriverCommand::ContextUsage { ack } => {
                 let _ = ack.send(Ok(()));
-                emit(
-                    &self.outputs,
-                    SessionOutput::Event {
-                        event: HarnessEvent::ContextUsage {
-                            usage: ContextUsage {
-                                model: self.model.clone(),
-                                window: self.normalizer.window(),
-                                auto_compact: None,
-                                categories: Vec::new(),
-                                mcp_tools: Vec::new(),
-                                memory_files: Vec::new(),
-                                agents: Vec::new(),
-                                skills: Vec::new(),
-                            },
-                        },
-                    },
-                )
-                .await
+                self.report_context_usage().await
             }
             DriverCommand::SetModel { model, ack } => {
                 let result = self.apply_model_choice(model).await;
@@ -1424,6 +1409,13 @@ impl Driver {
                 }
                 // A turn is the only thing that moves the plan's meters.
                 self.request_usage();
+                // And the only thing that moves the window. Reported
+                // unasked, so a session whose machine is suspended later
+                // still says where its context went rather than offering
+                // to wake a machine to find out.
+                if !self.report_context_usage().await {
+                    return false;
+                }
                 // What arrived mid-turn now opens the next one.
                 if let Some(text) = self.queued_messages.pop_front()
                     && let Err(error) = self.start_turn(text).await
@@ -1525,13 +1517,12 @@ impl Driver {
             }
             PendingCall::Usage => match result {
                 Ok(value) => {
-                    let (windows, events) = self.normalizer.on_plan_usage(&value);
-                    for event in events {
+                    for event in self.normalizer.on_plan_usage(&value) {
                         if !emit(&self.outputs, SessionOutput::Event { event }).await {
                             return false;
                         }
                     }
-                    emit(&self.outputs, SessionOutput::PlanUsage { windows }).await
+                    true
                 }
                 Err(error) => {
                     // An agent that cannot state the plan's meters
@@ -1590,6 +1581,33 @@ impl Driver {
             });
         });
         Ok(())
+    }
+
+    /// States what the context window holds, as this driver knows it.
+    ///
+    /// An ACP agent reports the window's fill and nothing about what is in
+    /// it, so this is the fill — the categories a Claude Code session
+    /// breaks its window into have no counterpart here, and an invented
+    /// one would be worse than none.
+    async fn report_context_usage(&self) -> bool {
+        emit(
+            &self.outputs,
+            SessionOutput::Event {
+                event: HarnessEvent::ContextUsage {
+                    usage: ContextUsage {
+                        model: self.model.clone(),
+                        window: self.normalizer.window(),
+                        auto_compact: None,
+                        categories: Vec::new(),
+                        mcp_tools: Vec::new(),
+                        memory_files: Vec::new(),
+                        agents: Vec::new(),
+                        skills: Vec::new(),
+                    },
+                },
+            },
+        )
+        .await
     }
 
     /// Asks the configured usage method for the plan's windows.

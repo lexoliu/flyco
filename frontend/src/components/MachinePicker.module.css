@@ -9,15 +9,9 @@
   gap: var(--space-3);
 }
 
-.note {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-}
-
 /*
  * The codespaces suggestion, where a form the catalog cannot offer is
- * looked for. Quieter than the note: a link, not a reading.
+ * looked for: a link, not a reading.
  */
 .hint {
   margin: 0;

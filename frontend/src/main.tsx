@@ -3,6 +3,7 @@ import { Navigate, Route, Router } from "@solidjs/router";
 import "./styles/global.css";
 import { registerSW } from "virtual:pwa-register";
 import { initTheme } from "./lib/theme";
+import { initAppearance } from "./lib/appearance";
 import AppShell from "./components/AppShell";
 import Login from "./routes/Login";
 import AuthComplete from "./routes/AuthComplete";
@@ -20,9 +21,12 @@ import McpCatalog from "./routes/settings/McpCatalog";
 import SkillCatalog from "./routes/settings/SkillCatalog";
 import InstructionsSection from "./routes/settings/InstructionsSection";
 import AccountSection from "./routes/settings/AccountSection";
+import ApiKeysSection from "./routes/settings/ApiKeysSection";
+import PreferencesSection from "./routes/settings/PreferencesSection";
 import NotFound from "./routes/NotFound";
 
 initTheme();
+initAppearance();
 // Registers the push service worker; with `registerType: "autoUpdate"` a
 // new build replaces the old one without asking.
 registerSW({ immediate: true });
@@ -55,6 +59,8 @@ render(
         <Route path="/tools/mcp-catalog" component={McpCatalog} />
         <Route path="/tools/skill-catalog" component={SkillCatalog} />
         <Route path="/instructions" component={InstructionsSection} />
+        <Route path="/api-keys" component={ApiKeysSection} />
+        <Route path="/preferences" component={PreferencesSection} />
         <Route path="/account" component={AccountSection} />
       </Route>
       <Route path="*404" component={NotFound} />

@@ -30,12 +30,13 @@ use skyzen_services::{Db, Kv};
 
 use crate::config::ApiConfig;
 use crate::crypto::{pkce, random_token};
-use crate::devin::{self, DevinApi as _, DevinClient};
+use crate::devin::{self, DevinApi as _};
 use crate::error::ApiError;
 use crate::expiring;
 use crate::harness_accounts::{self, StoredCredential};
 use crate::problem::Outcome;
 use crate::respond::Created;
+use crate::vendors::Vendors;
 
 /// How long the user has to approve the grant and paste the code back.
 const ATTEMPT_TTL_SECONDS: u64 = 10 * 60;
@@ -109,12 +110,12 @@ async fn begin(kv: &Kv, user: UserId) -> Result<DevinOauthStart, ApiError> {
 pub async fn complete(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
-    State(devin): State<DevinClient>,
+    State(vendors): State<Vendors>,
     Json(request): Json<CompleteDevinOauth>,
     kv: Kv,
     db: Db,
 ) -> Outcome<Created<Json<HarnessAccountView>>> {
-    redeem(&config, &devin, &kv, &db, user.id, request)
+    redeem(&config, &vendors, &kv, &db, user.id, request)
         .await
         .map(|view| Created(Json(view)))
         .into()
@@ -122,7 +123,7 @@ pub async fn complete(
 
 async fn redeem(
     config: &ApiConfig,
-    devin: &DevinClient,
+    vendors: &Vendors,
     kv: &Kv,
     db: &Db,
     user: UserId,
@@ -146,7 +147,7 @@ async fn redeem(
         "the pasted code must not be empty",
     ))?;
 
-    let token = devin.redeem_grant(code, &attempt.verifier).await?;
+    let token = vendors.devin.redeem_grant(code, &attempt.verifier).await?;
 
     // Spent: the code has been exchanged, so the attempt has done its job.
     // A concurrent second paste of the same code loses at Devin, not here,
@@ -156,14 +157,24 @@ async fn redeem(
     // The label is Devin's own name for the principal, as it is for a
     // pasted key — and the read doubles as the token's validation: a token
     // Devin will not open never reaches the table.
-    let label = devin
+    let label = vendors
+        .devin
         .self_identity(&token)
         .await?
         .account_name()
         .unwrap_or(harness_accounts::UNNAMED_DEVIN_ACCOUNT)
         .to_owned();
     let credential = StoredCredential::ApiKey { key: token };
-    harness_accounts::store(db, config, user, &label, HarnessKind::Devin, &credential).await
+    harness_accounts::store(
+        db,
+        config,
+        vendors,
+        user,
+        &label,
+        HarnessKind::Devin,
+        &credential,
+    )
+    .await
 }
 
 /// The two authenticated routes of the Devin sign-in.
@@ -181,9 +192,10 @@ mod tests {
     use skyzen_test::TestContext;
 
     use super::{CompleteDevinOauth, begin, redeem};
-    use crate::devin::DevinClient;
     use crate::error::ApiError;
-    use crate::testing::{DEVIN_CODE, TestDevin, migrate, seed_other_user, seed_user, test_config};
+    use crate::testing::{
+        DEVIN_CODE, migrate, seed_other_user, seed_user, test_config, test_vendors,
+    };
     use flyco_core::HarnessKind;
 
     /// A refused paste leaves the sign-in standing, and only a redeemed
@@ -198,25 +210,25 @@ mod tests {
         migrate(&db).await;
         let user = seed_user(&db).await;
         let config = test_config();
-        let devin = DevinClient::Fake(TestDevin);
+        let vendors = test_vendors();
         let started = begin(&kv, user.id).await.expect("a sign-in starts");
         let paste = |code: &str| CompleteDevinOauth {
             attempt_id: started.attempt_id,
             code: code.to_owned(),
         };
 
-        let wrong = redeem(&config, &devin, &kv, &db, user.id, paste("not-the-code")).await;
+        let wrong = redeem(&config, &vendors, &kv, &db, user.id, paste("not-the-code")).await;
         assert!(
             matches!(wrong, Err(ApiError::DevinOauthRejected { .. })),
             "a wrong paste is Devin's refusal, not a spent attempt: {wrong:?}"
         );
 
-        let linked = redeem(&config, &devin, &kv, &db, user.id, paste(DEVIN_CODE))
+        let linked = redeem(&config, &vendors, &kv, &db, user.id, paste(DEVIN_CODE))
             .await
             .expect("the same sign-in redeems the right paste");
         assert_eq!(linked.harness, HarnessKind::Devin);
 
-        let again = redeem(&config, &devin, &kv, &db, user.id, paste(DEVIN_CODE)).await;
+        let again = redeem(&config, &vendors, &kv, &db, user.id, paste(DEVIN_CODE)).await;
         assert!(
             matches!(again, Err(ApiError::DevinOauthAttemptExpired)),
             "a redeemed sign-in is spent: {again:?}"
@@ -230,12 +242,12 @@ mod tests {
         let user = seed_user(&db).await;
         let other = seed_other_user(&db).await;
         let config = test_config();
-        let devin = DevinClient::Fake(TestDevin);
+        let vendors = test_vendors();
         let started = begin(&kv, user.id).await.expect("a sign-in starts");
 
         let stolen = redeem(
             &config,
-            &devin,
+            &vendors,
             &kv,
             &db,
             other.id,

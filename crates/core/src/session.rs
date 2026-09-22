@@ -422,6 +422,20 @@ const fn default_spot() -> bool {
 /// and short enough that forgotten machines do not sit on a disk forever.
 pub const ARCHIVE_AFTER_IDLE_SECS: u64 = 7 * 24 * 60 * 60;
 
+/// How long a session that is *over* may sit before flyco archives it —
+/// a day, against the week a session still in play gets.
+///
+/// [`Failed`](SessionState::Failed) is the only terminal state flyco
+/// writes, and there is nothing to come back to on one: the machine is
+/// already released and archiving keeps the transcript, so a resume from
+/// `Archived` loses nothing a `Failed` session still had. A live session
+/// that is merely idle might still be picked up — a paused thought, an
+/// interrupted machine a resume could restart — which is what the longer
+/// clock is for. Twenty-four hours is long enough to read what the
+/// failure said and act on it; past that an unarchived failure is sidebar
+/// clutter, and the sidebar is finite.
+pub const ARCHIVE_FINISHED_AFTER_IDLE_SECS: u64 = 24 * 60 * 60;
+
 /// How long an idle session keeps its machine's compute before flyco
 /// suspends it.
 ///
@@ -433,6 +447,15 @@ pub const ARCHIVE_AFTER_IDLE_SECS: u64 = 7 * 24 * 60 * 60;
 /// the next message never loses the machine, and the disk is always kept:
 /// suspension interrupts the session, it does not end it.
 pub const SUSPEND_AFTER_IDLE_SECS: u64 = 30 * 60;
+
+/// The longest a user may hold a machine awake in one go, in minutes.
+///
+/// Eight hours: long enough for a build, a soak test or a watch loop to
+/// finish unattended, and short enough that a hold forgotten at the end of
+/// a day is over before the next one starts. A hold is renewed by asking
+/// again, which is a decision made while looking at the bill rather than
+/// one made once and never revisited.
+pub const KEEP_AWAKE_MAX_MINUTES: u32 = 8 * 60;
 
 /// How long a session may be built for before flyco calls it failed.
 ///
@@ -650,6 +673,19 @@ pub struct SessionSummary {
     /// at read, so every row states the mode it is on rather than leaving
     /// the composer's chip to guess.
     pub permission_mode: crate::harness::PermissionMode,
+    /// Until when the idle sweep must leave this session's machine alone,
+    /// seconds since the Unix epoch.
+    ///
+    /// `None` for a session on the ordinary clock, which is almost all of
+    /// them. A machine is stopped after
+    /// [`SUSPEND_AFTER_IDLE_SECS`] because compute bills by the minute,
+    /// and that is wrong exactly when the agent is doing something the
+    /// control plane cannot see it doing — a long build, a soak test, a
+    /// watch loop — so the user holds the machine open for a while. An
+    /// instant rather than a flag: a machine held awake for ever is a bill
+    /// nobody chose, and the hold has to expire on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub awake_until_unix: Option<u64>,
     /// Whether the session may have a desktop.
     ///
     /// On the summary rather than only on [`SessionDetail`] because the
@@ -725,6 +761,22 @@ pub struct HarnessSessionView {
     /// machine was provisioned with, so a session put on `plan` while it
     /// ran would otherwise come back on whatever it was provisioned under.
     pub permission_mode: crate::harness::PermissionMode,
+}
+
+/// Request body of `PUT /v1/sessions/{id}/awake`.
+///
+/// A route of its own rather than a field on [`UpdateSession`]: this is
+/// not a property of the session the user is editing, it is an instruction
+/// to the idle sweep with a clock attached, and the two are asked for from
+/// different places and answered at different times.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct KeepAwake {
+    /// How much longer the machine must not be suspended for idleness, in
+    /// minutes, up to [`KEEP_AWAKE_MAX_MINUTES`].
+    ///
+    /// `None` ends the hold and gives the machine back to the sweep.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u32>,
 }
 
 /// Request body of `PATCH /v1/sessions/{id}`.
@@ -1035,6 +1087,7 @@ mod tests {
             },
             permission_mode: crate::PermissionMode::Auto,
             computer_use: false,
+            awake_until_unix: None,
         };
         let json = serde_json::to_string(&summary).expect("serialize");
         assert!(!json.contains("interrupted_reason"), "{json}");

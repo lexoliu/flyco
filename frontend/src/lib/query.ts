@@ -26,6 +26,16 @@ export interface Query<T> {
   readonly loading: boolean;
   readonly error: unknown;
   readonly latest: T | undefined;
+  /**
+   * Whether the first read is over, however it ended.
+   *
+   * What a screen waits on before it draws an empty state: "nothing here"
+   * is a claim, and making it while the first read is still in flight is
+   * the flash every list used to do. An answer and a failure both end the
+   * wait — one fills the list, the other is shown beside it — and only the
+   * moment before either is a screen that knows nothing.
+   */
+  readonly settled: boolean;
 }
 
 export type QueryReturn<T, R = unknown> = [Query<T>, ResourceActions<T | undefined, R>];
@@ -38,6 +48,7 @@ function guard<T>(resource: Resource<T>): Query<T> {
     loading: { get: () => resource.loading },
     error: { get: () => resource.error },
     latest: { get: () => (resource.error === undefined ? resource.latest : undefined) },
+    settled: { get: () => resource.error !== undefined || resource.latest !== undefined },
   }) as Query<T>;
 }
 

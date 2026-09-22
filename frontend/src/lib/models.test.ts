@@ -31,13 +31,13 @@ const CLAUDE: ModelOption[] = [
 ];
 
 describe("defaultChoice", () => {
-  it("opens on the entry the harness marks as its default, with no effort", () => {
-    expect(defaultChoice(CLAUDE)).toEqual({ model: "default" });
+  it("opens on the entry the harness marks as its default, at its opening level", () => {
+    expect(defaultChoice(CLAUDE)).toEqual({ model: "default", effort: "medium" });
   });
 
   it("opens on the first entry when the harness marks none", () => {
     const unmarked = CLAUDE.map((option) => ({ ...option, is_default: false }));
-    expect(defaultChoice(unmarked)).toEqual({ model: "default" });
+    expect(defaultChoice(unmarked)).toEqual({ model: "default", effort: "medium" });
   });
 
   it("refuses an empty list rather than choosing nothing", () => {

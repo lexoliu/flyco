@@ -8,8 +8,8 @@
 
 use flyco_core::{
     CloudUsageView, HarnessAccountId, HarnessAccountView, HarnessKind, HarnessObservation,
-    LlmUsageView, OBSERVATION_WINDOW_SECONDS, Problem, ProviderAccountView, RateLimitObservation,
-    ReportUsage, SessionId, UsageWindow, Usd, UserId,
+    LlmUsageView, OBSERVATION_WINDOW_SECONDS, PlanUsage, Problem, ProviderAccountView,
+    RateLimitObservation, SessionId, Usd, UserId,
 };
 use skyzen::routing::Router;
 use skyzen::sql;
@@ -18,7 +18,8 @@ use skyzen_test::{TestClient, TestContext};
 
 use crate::clock::now_unix;
 use crate::testing::{
-    migrated_router, seed_other_user, seed_provider_account, seed_session, seed_user,
+    migrated_router, seed_harness_account, seed_other_user, seed_provider_account, seed_session,
+    seed_unreadable_claude_account, seed_user,
 };
 use crate::{daemon_tokens, session};
 
@@ -369,27 +370,7 @@ async fn a_host_the_user_owns_contributes_no_row(ctx: TestContext, kv: Kv, db: D
     );
 }
 
-// ── The plan's own limits, as the harness reports them ──
-
-/// One window, as a daemon files it.
-fn window(minutes: u32, percent: u8) -> UsageWindow {
-    UsageWindow::new(Some(minutes), None, percent, Some(1_789_002_000))
-}
-
-/// Files a plan-usage snapshot the way a session's daemon does.
-async fn report(
-    client: &TestClient<Router>,
-    token: &str,
-    session: SessionId,
-    windows: Vec<UsageWindow>,
-) -> skyzen_test::TestResponse {
-    client
-        .put(&format!("/v1/sessions/{session}/usage"))
-        .bearer(token)
-        .json(&ReportUsage { windows })
-        .send()
-        .await
-}
+// ── The plan's own limits, read from the vendor ──
 
 /// The caller's linked accounts, as Settings lists them.
 async fn accounts(client: &TestClient<Router>, token: &str) -> Vec<HarnessAccountView> {
@@ -402,27 +383,25 @@ async fn accounts(client: &TestClient<Router>, token: &str) -> Vec<HarnessAccoun
     response.json()
 }
 
+/// The windows a plan states, or the failure to state them.
+fn plan(row: &HarnessAccountView) -> &PlanUsage {
+    &row.usage
+}
+
 #[skyzen::test]
-async fn a_reported_snapshot_reaches_the_account_its_session_runs(
+async fn a_plan_is_read_from_the_vendor_while_the_listing_is_answered(
     ctx: TestContext,
     kv: Kv,
     db: Db,
 ) {
+    // Nothing is stored between requests: the listing carries whatever
+    // Anthropic says at the moment it is answered, which is the whole
+    // point — a snapshot served a plan at 2% for days (#381).
     let client = ctx.client(migrated_router(&db).await);
     let user = seed_user(&db).await;
     let token = session::issue(&kv, user.id).await.expect("issue a session");
-    let claude = link(&db, user.id, HarnessKind::ClaudeCode, "personal").await;
-    let codex = link(&db, user.id, HarnessKind::Codex, "work").await;
-
-    // `seed_session` opens a Claude Code session, so the snapshot belongs
-    // to the Claude account and to that one only: the body says nothing
-    // about whose plan it is, and the session row is what decides.
-    let session = seed_session(&db, &user).await;
-    let daemon = pair(&db, user.id, session).await;
-    let reported = vec![window(300, 26), window(10_080, 15)];
-    report(&client, &daemon, session, reported.clone())
-        .await
-        .assert_status(204);
+    let claude = seed_harness_account(&db, user.id, HarnessKind::ClaudeCode).await;
+    let codex = seed_harness_account(&db, user.id, HarnessKind::Codex).await;
 
     let listed = accounts(&client, &token).await;
     let claude_row = listed
@@ -434,82 +413,54 @@ async fn a_reported_snapshot_reaches_the_account_its_session_runs(
         .find(|row| row.id == codex)
         .expect("the Codex account is listed");
 
-    assert_eq!(claude_row.usage, reported);
+    let PlanUsage::Windows { windows } = plan(claude_row) else {
+        panic!("the vendor answered, so the plan is windows: {claude_row:?}");
+    };
     assert_eq!(
-        codex_row.usage,
-        [] as [UsageWindow; 0],
-        "nothing has asked the Codex plan, so nothing is drawn for it"
+        windows
+            .iter()
+            .map(|window| (window.label.as_str(), window.used_percent))
+            .collect::<Vec<_>>(),
+        [("5-hour", 43), ("Weekly", 78), ("Weekly (Opus)", 100)],
+        "every window the plan has, and only those: the Sonnet bucket this \
+         plan does not meter states no utilization and is not drawn"
     );
-}
-
-#[skyzen::test]
-async fn the_newest_snapshot_replaces_the_last_one_whole(ctx: TestContext, kv: Kv, db: Db) {
-    // The vendor answers the whole question every time it is asked, so a
-    // window the plan no longer has must leave the screen rather than
-    // surviving as the older half of a merge.
-    let client = ctx.client(migrated_router(&db).await);
-    let user = seed_user(&db).await;
-    let token = session::issue(&kv, user.id).await.expect("issue a session");
-    link(&db, user.id, HarnessKind::ClaudeCode, "personal").await;
-    let session = seed_session(&db, &user).await;
-    let daemon = pair(&db, user.id, session).await;
-
-    report(
-        &client,
-        &daemon,
-        session,
-        vec![window(300, 26), window(10_080, 15)],
-    )
-    .await
-    .assert_status(204);
-    report(&client, &daemon, session, vec![window(300, 31)])
-        .await
-        .assert_status(204);
-
-    let listed = accounts(&client, &token).await;
-    assert_eq!(listed[0].usage, [window(300, 31)]);
-}
-
-#[skyzen::test]
-async fn a_session_on_no_plan_at_all_reports_an_empty_snapshot(ctx: TestContext, kv: Kv, db: Db) {
-    // What an API-key session answers. Storing it is what makes an account
-    // that moved off a subscription stop showing yesterday's rings, so an
-    // empty list is recorded rather than refused.
-    let client = ctx.client(migrated_router(&db).await);
-    let user = seed_user(&db).await;
-    let token = session::issue(&kv, user.id).await.expect("issue a session");
-    link(&db, user.id, HarnessKind::ClaudeCode, "personal").await;
-    let session = seed_session(&db, &user).await;
-    let daemon = pair(&db, user.id, session).await;
-
-    report(&client, &daemon, session, vec![window(300, 26)])
-        .await
-        .assert_status(204);
-    report(&client, &daemon, session, Vec::new())
-        .await
-        .assert_status(204);
-
-    assert_eq!(
-        accounts(&client, &token).await[0].usage,
-        [] as [UsageWindow; 0]
+    assert!(
+        windows
+            .iter()
+            .all(|window| window.resets_at_unix.is_some_and(|at| at > 0)),
+        "a live reading's windows are still open: {windows:?}"
     );
+
+    // An API key bills per token. There is no plan behind it, which is a
+    // different fact from a plan with nothing spent.
+    assert_eq!(plan(codex_row), &PlanUsage::Unmetered);
 }
 
 #[skyzen::test]
-async fn a_snapshot_for_a_harness_the_user_has_no_account_for_is_refused(
+async fn a_plan_the_vendor_will_not_state_says_so_rather_than_drawing_zero(
     ctx: TestContext,
-    _kv: Kv,
+    kv: Kv,
     db: Db,
 ) {
+    // A grant Anthropic refuses is the state the old column could not
+    // express: the account is linked, the plan is unknown, and a ring at
+    // zero would be flyco inventing a reading.
     let client = ctx.client(migrated_router(&db).await);
     let user = seed_user(&db).await;
-    let session = seed_session(&db, &user).await;
-    let daemon = pair(&db, user.id, session).await;
+    let token = session::issue(&kv, user.id).await.expect("issue a session");
+    seed_unreadable_claude_account(&db, user.id).await;
 
-    let response = report(&client, &daemon, session, vec![window(300, 26)]).await;
-    response.assert_status(404);
-    assert_eq!(
-        response.json::<Problem>().kind,
-        "https://flyco.dev/problems/harness-account-not-found"
+    let listed = accounts(&client, &token).await;
+    let PlanUsage::Unavailable { reason } = plan(&listed[0]) else {
+        panic!("the vendor refused, so the plan is unavailable: {listed:?}");
+    };
+    assert!(
+        reason.contains("401"),
+        "the reason is the vendor's own: {reason}"
+    );
+    assert!(
+        !listed[0].models.is_empty(),
+        "an unreadable plan costs the plan and nothing else"
     );
 }

@@ -44,12 +44,12 @@
  */
 .stateNotice {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   grid-template-areas:
-    "title action"
-    "body action";
+    "icon title action"
+    "icon body  action";
   align-items: center;
-  gap: var(--space-1) var(--space-5);
+  gap: var(--space-1) var(--space-4);
   margin: 0;
   padding: var(--space-4) var(--space-5);
   border: var(--border-width) solid var(--color-border);
@@ -76,6 +76,23 @@
 }
 
 .stateNotice[data-tone="waiting"] .stateTitle {
+  color: var(--color-warning);
+}
+
+/* The mark the eye lands on before the sentence, in the notice's own
+   colour: the tone is the card's, and an icon in a different one would
+   read as a second state. */
+.stateIcon {
+  grid-area: icon;
+  align-self: center;
+  color: var(--color-text-muted);
+}
+
+.stateNotice[data-tone="failed"] .stateIcon {
+  color: var(--color-danger);
+}
+
+.stateNotice[data-tone="waiting"] .stateIcon {
   color: var(--color-warning);
 }
 
@@ -168,13 +185,27 @@
 }
 
 /*
+ * What makes the pill sticky, and what the transcript passes behind.
+ *
+ * The pill alone cannot do it: rows scrolling under a rounded pill show in
+ * the scroller's top padding above it and in the slivers past its ends,
+ * which reads as a banner dropped onto the transcript. The dock is the
+ * page's own background across the full measure, and it sticks a padding's
+ * worth above the scrollport so that strip is covered too.
+ */
+.approvalDock {
+  position: sticky;
+  top: calc(-1 * var(--space-4));
+  z-index: 5;
+  padding-top: var(--space-4);
+  background: var(--color-bg);
+}
+
+/*
  * Amber, sticky, and the only coloured band on the page: while an approval
  * is pending nothing else the agent could do matters (docs/ux.md §9.2).
  */
 .approvalBanner {
-  position: sticky;
-  top: 0;
-  z-index: 5;
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -231,12 +262,50 @@
 
 /* Under the scroller, so it is at the foot of the window whatever the
    transcript is doing. Held to the transcript's measure. */
+/* The state notice and the composer share one slot. Stacked, they are two
+   cards and need the gap between them; covered, the notice lies over the
+   box — see `.composerCovered`. */
 .composer {
   flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
   width: 100%;
   max-width: 840px;
   margin: 0 auto;
   padding: var(--space-2) 0 var(--space-4);
+}
+
+.composerBox {
+  display: contents;
+}
+
+/*
+ * A session with something to do first: the notice lies over the box
+ * rather than beside it, so the thing to do is the only thing to click.
+ */
+.composerCovered {
+  position: relative;
+}
+
+.composerCovered .composerBox {
+  display: block;
+}
+
+.composerInert {
+  opacity: 0.35;
+  filter: saturate(0.4);
+  pointer-events: none;
+  user-select: none;
+}
+
+.stateNoticeOver {
+  position: absolute;
+  z-index: 2;
+  left: 0;
+  right: 0;
+  top: 50%;
+  translate: 0 -50%;
 }
 
 /* The `git status --short` a refused archive quoted back, inside the shared
@@ -263,12 +332,13 @@
   }
 
   .stateNotice {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: auto minmax(0, 1fr);
     grid-template-areas:
-      "title"
-      "body"
-      "action";
+      "icon  title"
+      "body  body"
+      "action action";
     justify-items: start;
+    align-items: center;
     gap: var(--space-2);
   }
 }

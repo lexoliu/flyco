@@ -1,7 +1,8 @@
 /*
  * The model picker: the chosen model's detented effort rail first, the
- * level the thumb names as the way into the list, and the agent's models
- * behind that link, each with the harness's own one-line description.
+ * model's name at its head as the way into the list, and the agent's
+ * models behind that link, each with the harness's own one-line
+ * description.
  */
 
 .panel {
@@ -42,13 +43,11 @@
   color: var(--color-text);
 }
 
-/* The effort view's head: the level the thumb sits on as the way into
-   the model list, and the reset that hands the choice back to the
-   model. */
+/* The effort view's head: the model the rail belongs to, and the way
+   into the list of the others. */
 .head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
 }
 
 .models {
@@ -66,25 +65,8 @@
   cursor: pointer;
 }
 
-.reset {
-  display: inline-flex;
-  align-items: center;
-  padding: 4px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: none;
-  color: var(--color-text-muted);
-  cursor: pointer;
-}
-
-.reset:disabled {
-  color: var(--color-text-faint);
-  cursor: default;
-}
-
-/* The model the level belongs to, and what `Default` resolves to where
-   the harness says. */
-.effortModel {
+/* The level the thumb sits on, under the model it belongs to. */
+.effortReading {
   margin: 1px 0 0;
   color: var(--color-text-muted);
   font-size: var(--text-sm);

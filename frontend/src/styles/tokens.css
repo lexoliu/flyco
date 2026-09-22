@@ -46,6 +46,11 @@
   --font-mono:
     "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, SFMono-Regular,
     "SF Mono", Menlo, Consolas, monospace;
+  --font-serif:
+    "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman",
+    serif;
+  /* What a transcript's prose is set in; Settings → Preferences moves it. */
+  --font-reading: var(--font-sans);
 
   /* 14px base. `--text-2xl` is the ceiling: no heading is ever larger. */
   --text-2xs: 0.6875rem;
@@ -185,4 +190,27 @@
   --shadow-card: 0 1px 2px rgb(0 0 0 / 30%), 0 2px 8px -2px rgb(0 0 0 / 40%);
   --shadow-raised: 0 1px 2px rgb(0 0 0 / 40%), 0 12px 32px -14px rgb(0 0 0 / 70%);
   --shadow-panel: 0 12px 36px -10px rgb(0 0 0 / 70%), 0 1px 3px rgb(0 0 0 / 40%);
+}
+
+/*
+ * What this browser asked for (src/lib/appearance.ts).
+ *
+ * The whole scale — type and space alike — is in `rem`, so the interface
+ * size is one number on the root: a person who wants larger text wants a
+ * larger interface, not larger words in the same boxes.
+ */
+:root[data-text-size="small"] {
+  font-size: 15px;
+}
+
+:root[data-text-size="large"] {
+  font-size: 17.5px;
+}
+
+:root[data-reading-font="serif"] {
+  --font-reading: var(--font-serif);
+}
+
+:root[data-reading-font="mono"] {
+  --font-reading: var(--font-mono);
 }

@@ -61,7 +61,7 @@ pub use harness::{
     CompleteDevinOauth, ContextCost, ContextUsage, ContextWindow, DEVIN_ID_TAILS, DevinOauthStart,
     DriverKind, Feature, HarnessAccountView, HarnessCredentialInput, HarnessEvent, HarnessFeature,
     HarnessKind, LinkHarnessAccount, ModelChoice, ModelChoiceError, ModelOption, PermissionMode,
-    ReportModels, ReportUsage, UsageLimitHit, UsageReport, availability, builtin_models, matrix,
+    PlanUsage, ReportModels, UsageLimitHit, UsageReport, availability, builtin_models, matrix,
     normalize_models,
 };
 pub use host::{
@@ -104,14 +104,14 @@ pub use repo::{
     RepoSlug, RepoStatus, SessionRepo, checkout_dir,
 };
 pub use session::{
-    ARCHIVE_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB, DesktopInputRequest,
-    DesktopTakeoverRequest, HarnessSessionView, HarnessTui, InterruptedReason,
-    MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin, PROMPT_EXCERPT_CHARS,
-    PROVISION_DEADLINE_SECS, PausedReason, RunShell, SUSPEND_AFTER_IDLE_SECS, SendMessage,
-    SessionActivity, SessionDetail, SessionState, SessionSummary, SessionTransitionError,
-    TerminalInput, TerminalSize, TurnPage, TurnSummary, USAGE_LIMIT_CONTINUE_MESSAGE,
-    USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS, UpdateSession, UsageLimitPause,
-    excerpt,
+    ARCHIVE_AFTER_IDLE_SECS, ARCHIVE_FINISHED_AFTER_IDLE_SECS, CreateSession, DEFAULT_DISK_GIB,
+    DesktopInputRequest, DesktopTakeoverRequest, HarnessSessionView, HarnessTui, InterruptedReason,
+    KEEP_AWAKE_MAX_MINUTES, KeepAwake, MAX_SESSION_TITLE_CHARS, MachineChoice, MachineOrigin,
+    PROMPT_EXCERPT_CHARS, PROVISION_DEADLINE_SECS, PausedReason, RunShell, SUSPEND_AFTER_IDLE_SECS,
+    SendMessage, SessionActivity, SessionDetail, SessionState, SessionSummary,
+    SessionTransitionError, TerminalInput, TerminalSize, TurnPage, TurnSummary,
+    USAGE_LIMIT_CONTINUE_MESSAGE, USAGE_LIMIT_STOP_AFTER_SECS, USAGE_LIMIT_WAKE_LEAD_SECS,
+    UpdateSession, UsageLimitPause, excerpt,
 };
 pub use skill_catalog::{
     AddMarketplace, BUILT_IN_MARKETPLACE, CatalogSkill, InstallCatalogSkill, MarketplaceProblem,
@@ -139,4 +139,4 @@ pub use workdir::{
 /// Bumped on every incompatible change to [`wire`]; the control plane
 /// refuses daemons speaking a different version (fast fail, no
 /// best-effort compatibility).
-pub const WIRE_PROTOCOL_VERSION: u32 = 18;
+pub const WIRE_PROTOCOL_VERSION: u32 = 19;
