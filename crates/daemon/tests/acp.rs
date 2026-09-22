@@ -425,6 +425,23 @@ async fn a_turn_runs_from_user_message_to_completion() {
     );
     assert_eq!(usage.context.expect("checked above").used_tokens, 18);
 
+    // The window the turn left behind, reported unasked: a session whose
+    // machine is suspended later still says where its context went,
+    // instead of offering to wake one to find out.
+    let SessionOutput::Event {
+        event: HarnessEvent::ContextUsage { usage: context },
+    } = next(&mut outputs, "context usage").await
+    else {
+        panic!("a finished turn must state what the window holds");
+    };
+    assert_eq!(
+        context
+            .window
+            .expect("the agent reported a window")
+            .size_tokens,
+        200_000
+    );
+
     // The turn spent the five-hour window. The reading itself is filed
     // nowhere — the control plane reads the plan from the vendor while it
     // draws it — and what the driver still owes the conversation is the

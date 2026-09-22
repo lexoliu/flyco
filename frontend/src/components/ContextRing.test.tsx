@@ -1,6 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, within } from "@solidjs/testing-library";
-import { createSignal } from "solid-js";
 import ContextRing, { type ContextRingProps } from "./ContextRing";
 import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
 
@@ -130,69 +129,16 @@ describe("ContextRing", () => {
     ).toBeDisabled();
   });
 
-  it("greys the breakdown action while no machine is connected, and says why", () => {
-    const { props, getByRole, getByText } = mount({ machineUp: false, usage: null });
+  it("draws the breakdown a stopped session already has, and offers no wake", () => {
+    // The agent reports the breakdown at the end of every turn, so a
+    // session whose machine was suspended still knows where its context
+    // went. Offering to start a machine for an answer that is on the
+    // screen is what this panel used to do.
+    const { getByRole, queryByRole, getByText } = mount({ machineUp: false });
 
     getByRole("button", { name: /Context/ }).click();
-
-    const action = getByRole("button", { name: /See the detailed breakdown/ });
-    expect(action).toBeDisabled();
-    action.click();
-    expect(props.onBreakdown).not.toHaveBeenCalled();
-    // The reason is written in the panel, not only behind a hover tooltip.
-    expect(getByText(/The machine is not connected/)).toBeInTheDocument();
-  });
-
-  it("offers to wake a resumable session for the breakdown, then asks once it is up", async () => {
-    const [up, setUp] = createSignal(false);
-    const resume = vi.fn().mockResolvedValue(true);
-    const onBreakdown = vi.fn();
-    const props: ContextRingProps = {
-      context: CONTEXT,
-      usage: null,
-      windows: [window()],
-      session: null,
-      now: NOW,
-      machineUp: false,
-      onResume: resume,
-      onBreakdown,
-    };
-    const { getByRole, getByText } = render(() => (
-      <ContextRing {...props} machineUp={up()} />
-    ));
-
-    getByRole("button", { name: /Context|Plan/ }).click();
-    const action = getByRole("button", { name: /Wake the machine for the breakdown/ });
-    expect(action).toBeEnabled();
-    action.click();
-
-    expect(resume).toHaveBeenCalledOnce();
-    await Promise.resolve();
-    expect(getByText("Waking the machine…")).toBeInTheDocument();
-    expect(onBreakdown).not.toHaveBeenCalled();
-
-    // The daemon connecting is what releases the queued question.
-    setUp(true);
-    expect(onBreakdown).toHaveBeenCalledOnce();
-  });
-
-  it("offers the wake again when the resume attempt fails", async () => {
-    const resume = vi.fn().mockResolvedValue(false);
-    const { props, getByRole } = mount({
-      machineUp: false,
-      usage: null,
-      onResume: resume,
-    });
-
-    getByRole("button", { name: /Context/ }).click();
-    getByRole("button", { name: /Wake the machine for the breakdown/ }).click();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(props.onBreakdown).not.toHaveBeenCalled();
-    expect(
-      getByRole("button", { name: /Wake the machine for the breakdown/ }),
-    ).toBeEnabled();
+    expect(getByText("Compacts automatically at 80%")).toBeInTheDocument();
+    expect(queryByRole("button", { name: /breakdown/i })).toBeNull();
   });
 
   it("says the ask went unanswered rather than silently timing out", async () => {

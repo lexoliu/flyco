@@ -1323,9 +1323,6 @@ function SessionView(props: { id: string }) {
                         session={sessionTotals()}
                         now={now()}
                         machineUp={machineUp()}
-                        onResume={
-                          notice()?.action?.kind === "resume" ? onResume : undefined
-                        }
                         onBreakdown={requestContextBreakdown}
                       />
                     </Show>

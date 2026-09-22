@@ -49,21 +49,13 @@ export interface ContextRingProps {
   /** The page's clock, so every reset hint reads the same instant. */
   now: number;
   /**
-   * Whether the session's daemon is there to answer a breakdown. The
-   * request is delivered or it is nothing — the room cannot hold it the
-   * way it holds a prompt — so while no machine is connected the action
-   * either wakes the machine (when `onResume` is offered) or says why it
-   * cannot run, rather than dying silently.
+   * Whether the session's daemon is there to answer a fresh breakdown.
+   * The request is delivered or it is nothing — the room cannot hold it
+   * the way it holds a prompt — so while no machine is connected the
+   * panel draws the breakdown the agent last reported and offers no
+   * refresh, rather than a button that would die silently.
    */
   machineUp: boolean;
-  /**
-   * Resumes an interrupted session so its machine can answer, offered only
-   * when the session's own action is a resume. Resolves `true` once the
-   * control plane accepted the resume; `false` means the attempt failed
-   * and the button should offer the wake again rather than wait on a
-   * machine that is not coming.
-   */
-  onResume?: (() => Promise<boolean>) | undefined;
   /**
    * Sends the `context_usage` control request. The daemon's answer arrives
    * as a `context_usage` event and lands back in `usage`, which is how the
@@ -107,12 +99,6 @@ export default function ContextRing(props: ContextRingProps) {
    */
   const [asking, setAsking] = createSignal(false);
   /**
-   * A resume asked for the breakdown is waiting on the machine. The
-   * question is sent the moment the daemon is back — the click that chose
-   * "wake for the breakdown" already said what it wanted.
-   */
-  const [waking, setWaking] = createSignal(false);
-  /**
    * The last ask timed out with no answer. The button offers to try again
    * and the panel says so, instead of looking as though nothing happened.
    */
@@ -129,12 +115,6 @@ export default function ContextRing(props: ContextRingProps) {
       timer = undefined;
     }
   });
-  createEffect(() => {
-    if (waking() && props.machineUp) {
-      setWaking(false);
-      ask();
-    }
-  });
   onCleanup(() => clearTimeout(timer));
 
   function ask(): void {
@@ -149,33 +129,21 @@ export default function ContextRing(props: ContextRingProps) {
     }, ASK_TIMEOUT_MS);
   }
 
-  async function askOrWake(): Promise<void> {
-    if (props.machineUp) {
-      ask();
-      return;
-    }
-    const resume = props.onResume;
-    if (resume === undefined) {
-      return;
-    }
-    setWaking(true);
-    if (!(await resume())) {
-      setWaking(false);
-    }
-  }
-
-  /** What the breakdown control is doing, in the order the states run. */
+  /**
+   * What the breakdown control is doing, in the order the states run, and
+   * `null` where there is nothing to offer.
+   *
+   * A machine that is not there answers nothing, and the agent reports the
+   * breakdown at the end of every turn — so a stopped session already has
+   * one and the panel simply draws it. Offering to wake a machine for an
+   * answer that is on the screen is what the panel used to do.
+   */
   const action = createMemo(() => {
     if (asking()) {
       return { label: "Asking the machine…", enabled: false };
     }
-    if (waking()) {
-      return { label: "Waking the machine…", enabled: false };
-    }
     if (!props.machineUp) {
-      return props.onResume === undefined
-        ? { label: "See the detailed breakdown", enabled: false }
-        : { label: "Wake the machine for the breakdown", enabled: true };
+      return null;
     }
     return {
       label:
@@ -426,22 +394,23 @@ export default function ContextRing(props: ContextRingProps) {
               </For>
             </Show>
           </section>
-          <button
-            type="button"
-            class={styles.breakdown}
-            disabled={!action().enabled}
-            onClick={() => void askOrWake()}
-          >
-            <Show when={asking() || waking()} fallback={<ListTree size={13} aria-hidden="true" />}>
-              <Loader size={13} class={cx(styles.spin)} aria-hidden="true" />
-            </Show>
-            {action().label}
-          </button>
+          <Show when={action()}>
+            {(state) => (
+              <button
+                type="button"
+                class={styles.breakdown}
+                disabled={!state().enabled}
+                onClick={() => ask()}
+              >
+                <Show when={asking()} fallback={<ListTree size={13} aria-hidden="true" />}>
+                  <Loader size={13} class={cx(styles.spin)} aria-hidden="true" />
+                </Show>
+                {state().label}
+              </button>
+            )}
+          </Show>
           <Show when={missed()}>
             <p class={styles.note}>No answer — the machine may not know this request. Try again.</p>
-          </Show>
-          <Show when={!props.machineUp && props.onResume === undefined}>
-            <p class={styles.note}>The machine is not connected — it answers the breakdown.</p>
           </Show>
         </div>
       )}
