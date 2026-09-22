@@ -74,6 +74,11 @@ create_runtime_user() {
 }
 
 # The daemon binary, checked against the checksum published beside it.
+# These names do not pick a version: the control plane serving this URL
+# resolves each of them to the daemon build that speaks its own wire
+# protocol, so a machine can never install a flycod its control plane
+# refuses at attach — and a protocol nothing was ever published for answers
+# 404, which fails this script the same way a missing release always did.
 install_flycod() {
   download "$binary_base/$artifact" "$scratch/$artifact"
   download "$binary_base/$artifact.sha256" "$scratch/$artifact.sha256"

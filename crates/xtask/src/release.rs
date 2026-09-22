@@ -121,14 +121,20 @@ pub const CHANNELS: [Channel; 1] = [Channel {
 
 impl Channel {
     /// Object key in the bucket.
+    ///
+    /// The daemon objects key under the wire protocol version they speak —
+    /// `releases/dev/wire-18/flycod-linux-x86_64` — so the daemon a machine's
+    /// installer is handed is always the one this control plane accepts at
+    /// attach, and publishing one protocol never overwrites what another
+    /// serves (issue #382).
     #[must_use]
-    pub fn key(self, object: &str) -> String {
-        format!("releases/{}/{object}", self.name)
+    pub fn key(self, object: &PublishedObject) -> String {
+        format!("releases/{}/{}", self.name, object.storage_key())
     }
 
     /// Bucket-qualified key, the form `wrangler r2 object` addresses.
     #[must_use]
-    pub fn bucket_key(self, object: &str) -> String {
+    pub fn bucket_key(self, object: &PublishedObject) -> String {
         format!("{BUCKET}/{}", self.key(object))
     }
 
@@ -426,7 +432,7 @@ impl Invocation {
                 "r2".to_owned(),
                 "object".to_owned(),
                 "put".to_owned(),
-                channel.bucket_key(object.name()),
+                channel.bucket_key(&object.published),
                 "--file".to_owned(),
                 object.file.display().to_string(),
                 "--content-type".to_owned(),
@@ -785,8 +791,11 @@ mod tests {
         let channel = dev();
 
         assert_eq!(
-            channel.bucket_key("flycod-linux-x86_64"),
-            "flyco-transcripts/releases/dev/flycod-linux-x86_64"
+            channel.bucket_key(&flyco_core::release::X86_64.binary),
+            format!(
+                "flyco-transcripts/releases/dev/wire-{}/flycod-linux-x86_64",
+                flyco_core::WIRE_PROTOCOL_VERSION
+            )
         );
         assert_eq!(
             channel.stage_dir(Path::new("/w/target")),
@@ -862,15 +871,18 @@ mod tests {
         assert_eq!(
             invocation.args,
             [
-                "r2",
-                "object",
-                "put",
-                "flyco-transcripts/releases/dev/flycod-linux-x86_64",
-                "--file",
-                "/w/target/flycod-release/dev/flycod-linux-x86_64",
-                "--content-type",
-                "application/octet-stream",
-                "--remote",
+                "r2".to_owned(),
+                "object".to_owned(),
+                "put".to_owned(),
+                format!(
+                    "flyco-transcripts/releases/dev/wire-{}/flycod-linux-x86_64",
+                    flyco_core::WIRE_PROTOCOL_VERSION
+                ),
+                "--file".to_owned(),
+                "/w/target/flycod-release/dev/flycod-linux-x86_64".to_owned(),
+                "--content-type".to_owned(),
+                "application/octet-stream".to_owned(),
+                "--remote".to_owned(),
             ]
         );
     }
