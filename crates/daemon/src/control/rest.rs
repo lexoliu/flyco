@@ -308,9 +308,10 @@ pub trait ControlApi: ApprovalRaiser {
 
     /// Reads the skills this session's machine installs.
     ///
-    /// The owner's whole registry: the daemon asks once at start, filters
-    /// to the scope of the harness it is about to run, and fetches each
-    /// bundle through [`skill_bundle`](Self::skill_bundle).
+    /// The owner's whole registry: the daemon asks once at start and
+    /// fetches each bundle through [`skill_bundle`](Self::skill_bundle).
+    /// There is nothing to filter — a skill belongs to the user, not to a
+    /// harness, so every harness on the machine gets every one of them.
     fn list_skills(&self) -> impl Future<Output = Result<Vec<SkillMount>, ControlApiError>> + Send;
 
     /// Downloads one mounted skill's bundle — the uploaded zip, verbatim.

@@ -741,8 +741,8 @@
         }
       },
       "post": {
-        "summary": "Installs one catalog skill, once per harness the caller chose.",
-        "description": "Installs one catalog skill, once per harness the caller chose.",
+        "summary": "Installs one catalog skill.",
+        "description": "Installs one catalog skill.",
         "operationId": "flyco_api::skill_catalog::install_catalog_skill",
         "requestBody": {
           "description": "Extractor arguments",
@@ -754,8 +754,7 @@
                 "required": [
                   "marketplace",
                   "plugin",
-                  "name",
-                  "scopes"
+                  "name"
                 ],
                 "properties": {
                   "marketplace": {
@@ -769,13 +768,6 @@
                   "plugin": {
                     "type": "string",
                     "description": "The plugin that carries it, as the catalog listed it. Two plugins\nof one marketplace may publish a skill under the same name, so the\nname alone does not say which directory to copy."
-                  },
-                  "scopes": {
-                    "type": "array",
-                    "items": {
-                      "$ref": "#/components/schemas/SkillScope"
-                    },
-                    "description": "Which harnesses get it. Empty is a request that installs nothing and\nis refused."
                   }
                 }
               }
@@ -789,42 +781,34 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "description": "One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.\n\nThe bundle itself is not part of this: a skill zip is object-storage\ncontent, not a JSON field.",
-                    "required": [
-                      "id",
-                      "name",
-                      "scope",
-                      "size_bytes",
-                      "uploaded_at_unix"
-                    ],
-                    "properties": {
-                      "id": {
-                        "$ref": "#/components/schemas/Uuid",
-                        "description": "Identifier."
-                      },
-                      "name": {
-                        "type": "string",
-                        "description": "Directory name the bundle is installed under."
-                      },
-                      "scope": {
-                        "$ref": "#/components/schemas/SkillScope",
-                        "description": "Which harness gets it."
-                      },
-                      "size_bytes": {
-                        "type": "integer",
-                        "format": "int64",
-                        "description": "Size of the stored zip in bytes.",
-                        "minimum": 0
-                      },
-                      "uploaded_at_unix": {
-                        "type": "integer",
-                        "format": "int64",
-                        "description": "When it was last uploaded, seconds since the Unix epoch.",
-                        "minimum": 0
-                      }
+                  "type": "object",
+                  "description": "One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.\n\nThe bundle itself is not part of this: a skill zip is object-storage\ncontent, not a JSON field.",
+                  "required": [
+                    "id",
+                    "name",
+                    "size_bytes",
+                    "uploaded_at_unix"
+                  ],
+                  "properties": {
+                    "id": {
+                      "$ref": "#/components/schemas/Uuid",
+                      "description": "Identifier."
+                    },
+                    "name": {
+                      "type": "string",
+                      "description": "Directory name the bundle is installed under."
+                    },
+                    "size_bytes": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "Size of the stored zip in bytes.",
+                      "minimum": 0
+                    },
+                    "uploaded_at_unix": {
+                      "type": "integer",
+                      "format": "int64",
+                      "description": "When it was last uploaded, seconds since the Unix epoch.",
+                      "minimum": 0
                     }
                   }
                 }
@@ -7938,11 +7922,10 @@
                   "type": "array",
                   "items": {
                     "type": "object",
-                    "description": "One row of `GET /v1/sessions/{id}/skills`: the list a session's daemon\ninstalls into the harness's global skills directory.\n\nA slimmer projection than [`SkillView`] — the daemon needs the id to\nask for the bundle, the name to pick the directory it lands in, and the\nscope to filter to its own harness. `uploaded_at_unix` is the registry's\nbookkeeping, not the machine's.",
+                    "description": "One row of `GET /v1/sessions/{id}/skills`: the list a session's daemon\ninstalls into every harness's global skills directory on the machine.\n\nA slimmer projection than [`SkillView`] — the daemon needs the id to\nask for the bundle and the name to pick the directory it lands in.\n`uploaded_at_unix` is the registry's bookkeeping, not the machine's.",
                     "required": [
                       "id",
                       "name",
-                      "scope",
                       "size_bytes"
                     ],
                     "properties": {
@@ -7953,10 +7936,6 @@
                       "name": {
                         "type": "string",
                         "description": "Directory name the bundle is installed under."
-                      },
-                      "scope": {
-                        "$ref": "#/components/schemas/SkillScope",
-                        "description": "Which harness gets it."
                       },
                       "size_bytes": {
                         "type": "integer",
@@ -8611,7 +8590,6 @@
                     "required": [
                       "id",
                       "name",
-                      "scope",
                       "size_bytes",
                       "uploaded_at_unix"
                     ],
@@ -8623,10 +8601,6 @@
                       "name": {
                         "type": "string",
                         "description": "Directory name the bundle is installed under."
-                      },
-                      "scope": {
-                        "$ref": "#/components/schemas/SkillScope",
-                        "description": "Which harness gets it."
                       },
                       "size_bytes": {
                         "type": "integer",
@@ -8649,8 +8623,8 @@
         }
       },
       "post": {
-        "summary": "Uploads a skill bundle, replacing any bundle of the same name and scope.",
-        "description": "Uploads a skill bundle, replacing any bundle of the same name and scope.",
+        "summary": "Uploads a skill bundle, replacing any bundle of the same name.",
+        "description": "Uploads a skill bundle, replacing any bundle of the same name.",
         "operationId": "flyco_api::skills::upload_skill",
         "parameters": [
           {
@@ -8660,15 +8634,6 @@
             "schema": {
               "type": "string",
               "description": "Directory name the bundle is installed under."
-            }
-          },
-          {
-            "name": "scope",
-            "in": "query",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/SkillScope",
-              "description": "Which harness's skills directory it belongs in. Claude Code and Codex\nread different ones, so this is not derivable from the bundle."
             }
           }
         ],
@@ -8694,7 +8659,6 @@
                   "required": [
                     "id",
                     "name",
-                    "scope",
                     "size_bytes",
                     "uploaded_at_unix"
                   ],
@@ -8706,10 +8670,6 @@
                     "name": {
                       "type": "string",
                       "description": "Directory name the bundle is installed under."
-                    },
-                    "scope": {
-                      "$ref": "#/components/schemas/SkillScope",
-                      "description": "Which harness gets it."
                     },
                     "size_bytes": {
                       "type": "integer",
@@ -8757,7 +8717,6 @@
                   "required": [
                     "id",
                     "name",
-                    "scope",
                     "size_bytes",
                     "uploaded_at_unix"
                   ],
@@ -8769,10 +8728,6 @@
                     "name": {
                       "type": "string",
                       "description": "Directory name the bundle is installed under."
-                    },
-                    "scope": {
-                      "$ref": "#/components/schemas/SkillScope",
-                      "description": "Which harness gets it."
                     },
                     "size_bytes": {
                       "type": "integer",
@@ -12535,8 +12490,7 @@
         "required": [
           "marketplace",
           "plugin",
-          "name",
-          "scopes"
+          "name"
         ],
         "properties": {
           "marketplace": {
@@ -12550,13 +12504,6 @@
           "plugin": {
             "type": "string",
             "description": "The plugin that carries it, as the catalog listed it. Two plugins\nof one marketplace may publish a skill under the same name, so the\nname alone does not say which directory to copy."
-          },
-          "scopes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SkillScope"
-            },
-            "description": "Which harnesses get it. Empty is a request that installs nothing and\nis refused."
           }
         }
       },
@@ -14969,21 +14916,12 @@
           }
         }
       },
-      "SkillScope": {
-        "type": "string",
-        "description": "Which harness's global skills directory a bundle belongs in.",
-        "enum": [
-          "claude",
-          "codex"
-        ]
-      },
       "SkillView": {
         "type": "object",
         "description": "One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.\n\nThe bundle itself is not part of this: a skill zip is object-storage\ncontent, not a JSON field.",
         "required": [
           "id",
           "name",
-          "scope",
           "size_bytes",
           "uploaded_at_unix"
         ],
@@ -14995,10 +14933,6 @@
           "name": {
             "type": "string",
             "description": "Directory name the bundle is installed under."
-          },
-          "scope": {
-            "$ref": "#/components/schemas/SkillScope",
-            "description": "Which harness gets it."
           },
           "size_bytes": {
             "type": "integer",
@@ -15387,17 +15321,12 @@
         "type": "object",
         "description": "What an uploaded zip is stored as.",
         "required": [
-          "name",
-          "scope"
+          "name"
         ],
         "properties": {
           "name": {
             "type": "string",
             "description": "Directory name the bundle is installed under."
-          },
-          "scope": {
-            "$ref": "#/components/schemas/SkillScope",
-            "description": "Which harness's skills directory it belongs in. Claude Code and Codex\nread different ones, so this is not derivable from the bundle."
           }
         }
       },

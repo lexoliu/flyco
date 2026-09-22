@@ -14,8 +14,7 @@
 
 use flyco_core::{
     ApprovalState, BudgetSignal, CloudProviderKind, HarnessKind, HostState, MachineOrigin,
-    MachineState, PausedReason, RepoAddedBy, Runtime, SessionActivity, SkillScope, SpendKind,
-    StopReason,
+    MachineState, PausedReason, RepoAddedBy, Runtime, SessionActivity, SpendKind, StopReason,
 };
 use skyzen_services::sql::ColumnEnum;
 
@@ -32,7 +31,6 @@ const CONSTRAINED: &[(&str, &str, &[&str])] = &[
     ("approvals", "state", ApprovalState::TOKENS),
     ("provider_accounts", "kind", CloudProviderKind::TOKENS),
     ("harness_accounts", "harness", HarnessKind::TOKENS),
-    ("skills", "scope", SkillScope::TOKENS),
     ("machines", "provider", CloudProviderKind::TOKENS),
     ("machines", "state", MachineState::TOKENS),
     ("machines", "runtime", Runtime::TOKENS),

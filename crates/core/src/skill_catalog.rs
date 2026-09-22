@@ -13,7 +13,6 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::id::MarketplaceId;
-use crate::skills::SkillScope;
 
 /// The marketplace every user has, which is not a row and cannot be removed.
 pub const BUILT_IN_MARKETPLACE: &str = "anthropics/skills";
@@ -93,7 +92,4 @@ pub struct InstallCatalogSkill {
     pub plugin: String,
     /// The skill's directory name, as the catalog listed it.
     pub name: String,
-    /// Which harnesses get it. Empty is a request that installs nothing and
-    /// is refused.
-    pub scopes: Vec<SkillScope>,
 }
