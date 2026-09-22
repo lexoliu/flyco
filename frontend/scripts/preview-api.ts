@@ -54,11 +54,14 @@ const HARNESS_ACCOUNTS: S["HarnessAccountView"][] = [
     linked_at_unix: NOW - 13 * DAY,
     expires_at_unix: NOW + 5 * DAY,
     models: CLAUDE_MODELS,
-    usage: [
-      { label: "5-hour", used_percent: 26, resets_at_unix: NOW + 2 * HOUR + 10 * MINUTE, window_minutes: 300 },
-      { label: "Weekly", used_percent: 61, resets_at_unix: NOW + 3 * DAY, window_minutes: 10_080 },
-      { label: "Weekly (Fable)", used_percent: 40, resets_at_unix: NOW + 3 * DAY, window_minutes: 10_080 },
-    ],
+    usage: {
+      state: "windows",
+      windows: [
+        { label: "5-hour", used_percent: 43, resets_at_unix: NOW + 2 * HOUR + 10 * MINUTE, window_minutes: 300 },
+        { label: "Weekly", used_percent: 78, resets_at_unix: NOW + 3 * DAY, window_minutes: 10_080 },
+        { label: "Weekly (Opus)", used_percent: 100, resets_at_unix: NOW + 3 * DAY, window_minutes: 10_080 },
+      ],
+    },
   },
   {
     id: "de71b000-1111-4222-8333-444455556666",
@@ -67,7 +70,7 @@ const HARNESS_ACCOUNTS: S["HarnessAccountView"][] = [
     linked_at_unix: NOW - DAY,
     expires_at_unix: null,
     models: [],
-    usage: [],
+    usage: { state: "unmetered" },
   },
 ];
 
@@ -129,6 +132,33 @@ const DEFAULT_MACHINE: S["MachineDefault"] = {
   entry: AZURE_B2S,
   pending_accounts: [],
 };
+
+/**
+ * What `GET /v1/machines/default?account=` answers for one account.
+ *
+ * Per account, because that is what the control plane does: every compute
+ * card asks for its own account's machine, and one shared answer put an
+ * Azure VM SKU and an Azure region under GitHub Codespaces and hid the
+ * free grant that only a codespace has.
+ */
+function defaultMachine(account: string | null): S["MachineDefault"] {
+  const entry = CATALOG.entries.find((candidate) => candidate.account === account);
+  if (account === null || entry === undefined) {
+    return DEFAULT_MACHINE;
+  }
+  return {
+    choice: {
+      provider_account: account,
+      machine_type: entry.machine_type,
+      region: entry.region,
+      runtime: entry.runtime,
+      spot: entry.pricing.kind === "metered" && entry.pricing.spot_hourly !== null,
+      disk_gib: 64,
+    },
+    entry,
+    pending_accounts: [],
+  };
+}
 
 // ── Repositories ──────────────────────────────────────────────────────
 
@@ -621,7 +651,7 @@ function route(method: string, path: string, url: URL, body: string): Response {
       return json({ status: "pending" } satisfies S["Enrollment"]);
     }
     if (path === "/v1/machines/catalog") return json(CATALOG);
-    if (path === "/v1/machines/default") return json(DEFAULT_MACHINE);
+    if (path === "/v1/machines/default") return json(defaultMachine(url.searchParams.get("account")));
     if (path === "/v1/github/repos") {
       const q = (url.searchParams.get("q") ?? "").toLowerCase();
       return json(REPOS.filter((repo) => repo.slug.toLowerCase().includes(q)));
@@ -751,6 +781,20 @@ function route(method: string, path: string, url: URL, body: string): Response {
     const installed = input.scopes.map((scope, index): S["SkillView"] => ({ id: `sk000000-0000-4000-8000-${String(SKILLS.length + index + 1).padStart(12, "0")}`, name: entry.name, scope, size_bytes: 12_288, uploaded_at_unix: NOW }));
     SKILLS.push(...installed);
     return json(installed, 201);
+  }
+  if (method === "PUT" && /^\/v1\/sessions\/[^/]+\/awake$/.test(path)) {
+    const id = path.split("/")[3] ?? "";
+    const input = JSON.parse(body || "{}") as S["KeepAwake"];
+    const target = SESSIONS.find((entry) => entry.id === id);
+    if (target === undefined) return problem(404, "session-not-found", "preview: no such session");
+    // The live clock, not the fixture's `NOW`: a hold is read back as the
+    // time it has left, and a constant captured at startup would make a
+    // fresh 4h hold read as the server's uptime short of four hours.
+    target.awake_until_unix =
+      input.minutes === undefined || input.minutes === null
+        ? null
+        : Math.floor(Date.now() / 1000) + input.minutes * MINUTE;
+    return json(target);
   }
   if (method === "POST" && path === "/v1/api-keys") {
     return json({ id: "k0000000-0000-4000-8000-0000000000ff", label: "Preview key", created_at_unix: NOW, last_used_unix: null, key: "fk_preview_2Qv8xLmR4pT7nWzKcYbA9sD3fG6h" }, 201);

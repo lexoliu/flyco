@@ -65,7 +65,9 @@ function ApiKeys() {
 
   return (
     <div class={styles.group}>
-      <p class={styles.groupLabel}>API keys</p>
+      {/* No group label: this page holds one group, and `API keys` under
+          the `API keys` heading is the same words twice. Tools labels its
+          groups because it has two. */}
       <ProblemNotice error={keys.error ?? error()} />
 
       <Show when={created()}>

@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
 import { render } from "@solidjs/testing-library";
 import HarnessUsage from "./HarnessUsage";
+import type { LlmUsageRow } from "../api/client";
 import type { UsageWindow } from "../api/wire";
+
+/** The account's own record: the vendor refused a call an hour ago. */
+function limited(): LlmUsageRow {
+  const now = Math.floor(Date.now() / 1000);
+  return {
+    account: "c0ffee00-1111-4222-8333-444455556666",
+    harness: "claude_code",
+    label: "me@lexo.cool",
+    observed_cost: null,
+    period_start_unix: now - 7 * 86_400,
+    rate_limited_at_unix: now - 3600,
+    resets_at_unix: now + 3600,
+  };
+}
 
 /** One window, as the vendor stated it while the page was answered. */
 function window(overrides: Partial<UsageWindow> = {}): UsageWindow {
@@ -81,5 +96,24 @@ describe("HarnessUsage", () => {
       bar.querySelector("[data-tier]")?.getAttribute("data-tier"),
     );
     expect(tiers).toEqual(["ok", "warn", "final-warn"]);
+  });
+
+  it("waits out a refusal only where the vendor would not state the plan", () => {
+    // The wait names no window. Beside stated windows it is a second,
+    // contradictory answer to what they already say per window, so it
+    // renders only in their absence.
+    const stated = render(() => (
+      <HarnessUsage row={limited()} plan={{ state: "windows", windows: [window()] }} />
+    ));
+    expect(
+      stated.getAllByRole("progressbar").map((bar) => bar.getAttribute("aria-label")),
+    ).toEqual(["5-hour"]);
+
+    const unstated = render(() => (
+      <HarnessUsage row={limited()} plan={{ state: "unavailable", reason: "HTTP 401" }} />
+    ));
+    expect(
+      unstated.getAllByRole("progressbar").map((bar) => bar.getAttribute("aria-label")),
+    ).toEqual(["Usage limit"]);
   });
 });

@@ -11,8 +11,11 @@
  * The observed half below it is flyco's own record and is deliberately not
  * a quota: `GET /v1/usage/llm` reports what the harness said a session cost
  * and, once the vendor actually refused a call, how much of the wait for
- * the reset has passed. Nothing renders at all until there is something
- * true to render.
+ * the reset has passed. That wait is a fallback and nothing more — it
+ * names no window, so beside live plan windows it reads as a second,
+ * contradictory answer to a question they already answer per window, and
+ * it renders only where the vendor would not state the plan. Nothing
+ * renders at all until there is something true to render.
  *
  * A component of its own rather than a corner of the settings card, so that
  * wherever a linked account is read out, its usage is read out the same
@@ -37,6 +40,8 @@ export interface HarnessUsageProps {
 
 export default function HarnessUsage(props: HarnessUsageProps) {
   const now = Date.now();
+  /** Whether the vendor stated the plan, which the wait bar defers to. */
+  const stated = () => props.plan.state === "windows" && props.plan.windows.length > 0;
   const limitedAt = () => props.row?.rate_limited_at_unix ?? null;
   const resetsAt = () => props.row?.resets_at_unix ?? null;
   const waited = () => {
@@ -80,7 +85,7 @@ export default function HarnessUsage(props: HarnessUsageProps) {
                 {formatDate(row().period_start_unix)}
               </p>
             </Show>
-            <Show when={waited() !== undefined}>
+            <Show when={waited() !== undefined && !stated()}>
               <RatioBar
                 label="Usage limit"
                 ratio={waited()}

@@ -358,6 +358,10 @@
   .header {
     gap: var(--space-2) var(--space-3);
     padding: var(--space-3) 0;
+    /* The identity wraps here, and centring the row against two lines left
+       the panel toggle and the menu floating beside `repo · branch`
+       instead of the title they act on. */
+    align-items: flex-start;
   }
 
   .identity {

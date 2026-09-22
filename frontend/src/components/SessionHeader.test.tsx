@@ -72,6 +72,21 @@ describe("SessionHeader", () => {
     expect(onKeepAwake).toHaveBeenCalledWith(null);
   });
 
+  it("reads a fresh hold as the whole duration the round trip cost a second of", () => {
+    const { getByRole, getByText } = mount({
+      session: {
+        ...SESSION,
+        // What the control plane answers a `8h` press with, once a
+        // second of round trip has passed: the label still has to read
+        // what the user asked for.
+        awake_until_unix: Math.floor(Date.now() / 1000) + 8 * 3600 - 1,
+      },
+    });
+
+    getByRole("button", { name: "Session actions" }).click();
+    expect(getByText("Awake for 8h")).toBeInTheDocument();
+  });
+
   it("holds the title's place while the session loads, without showing the id", () => {
     const { getByLabelText, queryByText } = mount({});
 

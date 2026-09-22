@@ -10,7 +10,7 @@
  */
 import { For, Show, createSignal, onMount, type JSX } from "solid-js";
 import { createQuery } from "../../lib/query";
-import { BellRing, Check, Monitor, Moon, Sun } from "lucide-solid";
+import { BellRing, Monitor, Moon, Sun } from "lucide-solid";
 import ProblemNotice from "../../components/ProblemNotice";
 import { getVapidPublicKey } from "../../api/client";
 import {
@@ -88,9 +88,6 @@ function Appearance() {
                 >
                   <option.icon size={13} aria-hidden="true" />
                   {option.label}
-                  <Show when={theme() === option.value}>
-                    <Check size={12} aria-hidden="true" />
-                  </Show>
                 </button>
               )}
             </For>

@@ -345,6 +345,9 @@ export default function SessionHeader(props: SessionHeaderProps) {
   );
 }
 
+/** Seconds in a minute, the granularity the hold's time left is read at. */
+const MINUTE = 60;
+
 /** The holds the menu offers, in the order they are read. */
 const HOLDS: readonly { minutes: number; label: string }[] = [
   { minutes: 60, label: "1h" },
@@ -373,7 +376,14 @@ function KeepAwake(props: { until: number | null; onChoose: (minutes: number | n
       return null;
     }
     const left = until - Math.floor(Date.now() / 1000);
-    return left > 0 ? left : null;
+    if (left <= 0) {
+      return null;
+    }
+    // Time left, rounded up to the minute. `formatDuration` truncates,
+    // which is right for a duration that has finished and wrong for one
+    // counting down: the round trip that sets an 8h hold costs a second,
+    // and a user who just pressed `8h` would be told `7h 59m`.
+    return left < MINUTE ? left : Math.ceil(left / MINUTE) * MINUTE;
   };
 
   return (

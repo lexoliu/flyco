@@ -157,7 +157,7 @@ export default function AgentsSection() {
                         const expiry = () => credentialExpiry(account.expires_at_unix, now());
                         return (
                         <div class={styles.cardBody}>
-                          <div class={styles.cardTop}>
+                          <div class={styles.accountTop}>
                             <div class={styles.identity}>
                               <span class={styles.cardTitle}>{account.label}</span>
                               <span class={styles.cardMeta}>

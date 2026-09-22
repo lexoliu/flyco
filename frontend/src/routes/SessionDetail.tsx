@@ -1004,12 +1004,14 @@ function SessionView(props: { id: string }) {
             the page holding everything else up.
           */}
             <Show when={waiting().length > 0}>
-              <p class={styles.approvalBanner}>
-                <AlertTriangle size={14} aria-hidden="true" />
-                {waiting().length === 1
-                  ? "The agent is waiting on your decision."
-                  : `The agent is waiting on ${waiting().length} decisions.`}
-              </p>
+              <div class={styles.approvalDock}>
+                <p class={styles.approvalBanner}>
+                  <AlertTriangle size={14} aria-hidden="true" />
+                  {waiting().length === 1
+                    ? "The agent is waiting on your decision."
+                    : `The agent is waiting on ${waiting().length} decisions.`}
+                </p>
+              </div>
             </Show>
 
             {/*
@@ -1035,12 +1037,16 @@ function SessionView(props: { id: string }) {
                       Nothing has happened yet. Send a message to get the agent started.
                     </p>
                   </Match>
+                  {/*
+                    Only the fact the transcript itself holds. Every state
+                    that lands here — paused, interrupted, failed,
+                    archived — has a notice in the composer's place
+                    carrying the label, the reason and the way out, and
+                    repeating `Paused · budget exhausted` here made one
+                    screen say it twice.
+                  */}
                   <Match when={session()}>
-                    <p class={styles.empty}>
-                      {status()?.label}
-                      <Show when={status()?.detail}>{(detail) => <> · {detail()}</>}</Show>. Nothing
-                      ran before it stopped.
-                    </p>
+                    <p class={styles.empty}>Nothing ran before it stopped.</p>
                   </Match>
                 </Switch>
               }
