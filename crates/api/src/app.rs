@@ -907,11 +907,19 @@ async fn confirm_manual_archive(
     Ok(())
 }
 
-/// Archives every session that has sat idle for a week.
+/// Archives every session that has sat idle past its clock.
+///
+/// The week for a session still in play, the day for one that finished —
+/// [`sessions::idle_since`] returns both sets. One failure does not stop
+/// the rest — a session whose archive was refused is left where it was
+/// and the next pass tries again, which is the honest answer to a
+/// provider or a room that could not be asked. An early return here would
+/// skip not just the remaining sessions but every cron leg after this
+/// one.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError`] if listing or archiving a session fails.
+/// Returns [`ApiError`] if listing the sessions itself fails.
 pub async fn archive_idle(
     db: &Db,
     config: &ApiConfig,
@@ -921,7 +929,7 @@ pub async fn archive_idle(
     at_unix: u64,
 ) -> Result<(), ApiError> {
     for idle in sessions::idle_since(db, at_unix).await? {
-        archive(
+        if let Err(error) = archive(
             db,
             config,
             github,
@@ -931,7 +939,14 @@ pub async fn archive_idle(
             idle.id,
             ArchiveKind::Automatic,
         )
-        .await?;
+        .await
+        {
+            tracing::warn!(
+                session = %idle.id,
+                %error,
+                "an idle session was not archived"
+            );
+        }
     }
     Ok(())
 }

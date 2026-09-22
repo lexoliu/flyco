@@ -6,11 +6,12 @@
 //! no business knowing.
 
 use flyco_core::{
-    ARCHIVE_AFTER_IDLE_SECS, ApprovalState, BranchName, BudgetConfig, BudgetId, BudgetStage,
-    ClientEvent, HarnessKind, HarnessSessionView, InterruptedReason, MAX_SESSION_TITLE_CHARS,
-    MachineOrigin, ModelChoice, PROVISION_DEADLINE_SECS, PausedReason, PermissionMode, RepoAddedBy,
-    RepoSlug, SUSPEND_AFTER_IDLE_SECS, SessionActivity, SessionDetail, SessionId, SessionRepo,
-    SessionState, SessionSummary, UsageLimitPause, Usd, UserId, builtin_models,
+    ARCHIVE_AFTER_IDLE_SECS, ARCHIVE_FINISHED_AFTER_IDLE_SECS, ApprovalState, BranchName,
+    BudgetConfig, BudgetId, BudgetStage, ClientEvent, HarnessKind, HarnessSessionView,
+    InterruptedReason, MAX_SESSION_TITLE_CHARS, MachineOrigin, ModelChoice,
+    PROVISION_DEADLINE_SECS, PausedReason, PermissionMode, RepoAddedBy, RepoSlug,
+    SUSPEND_AFTER_IDLE_SECS, SessionActivity, SessionDetail, SessionId, SessionRepo, SessionState,
+    SessionSummary, UsageLimitPause, Usd, UserId, builtin_models,
 };
 use skyzen::sql;
 use skyzen_services::Db;
@@ -1488,22 +1489,31 @@ pub async fn ended_holding_a_machine(db: &Db) -> Result<Vec<IdleSession>, ApiErr
     .await?)
 }
 
-/// Sessions that have sat idle past [`ARCHIVE_AFTER_IDLE_SECS`] and still
-/// hold an environment.
+/// Sessions that have sat idle long enough that flyco archives them.
+///
+/// Two clocks, one list. A session still in play — `active`, `paused`,
+/// `interrupted` — gets the week: idle is not over, and a paused thought
+/// or an interrupted machine might still be picked back up. A session
+/// that is over — [`SessionState::Failed`], the only terminal state flyco
+/// writes — gets the day [`ARCHIVE_FINISHED_AFTER_IDLE_SECS`] allows,
+/// because there is nothing on it to come back to.
 ///
 /// # Errors
 ///
 /// Returns [`ApiError`] if the database fails.
 pub async fn idle_since(db: &Db, at_unix: u64) -> Result<Vec<IdleSession>, ApiError> {
-    let cutoff = at_unix.saturating_sub(ARCHIVE_AFTER_IDLE_SECS);
+    let idle_cutoff = at_unix.saturating_sub(ARCHIVE_AFTER_IDLE_SECS);
+    let finished_cutoff = at_unix.saturating_sub(ARCHIVE_FINISHED_AFTER_IDLE_SECS);
     let active = SessionState::Active;
     let paused = SessionState::Paused;
     let interrupted = SessionState::Interrupted;
+    let failed = SessionState::Failed;
     Ok(sql!(
         db,
         "SELECT id, user_id FROM sessions \
-         WHERE last_active_unix <= {cutoff} \
-         AND (state = {active} OR state = {paused} OR state = {interrupted})"
+         WHERE ((state = {active} OR state = {paused} OR state = {interrupted}) \
+                AND last_active_unix <= {idle_cutoff}) \
+            OR (state = {failed} AND last_active_unix <= {finished_cutoff})"
     )
     .fetch_all()
     .await?)
