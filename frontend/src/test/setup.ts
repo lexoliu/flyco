@@ -187,6 +187,19 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
       }),
     );
   }
+  if (method === "POST" && path === "/v1/catalog/skills") {
+    return Promise.resolve(
+      jsonResponse(
+        {
+          id: "8d1a6f30-4b7c-4e21-b0f5-9c2d6a7e4b11",
+          name: "xlsx",
+          size_bytes: 100,
+          uploaded_at_unix: 1_790_000_600,
+        },
+        201,
+      ),
+    );
+  }
   if (method === "GET" && path === "/v1/catalog/mcp-servers") {
     return Promise.resolve(
       jsonResponse({

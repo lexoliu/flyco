@@ -7,11 +7,11 @@
 //! marketplace is there for everyone and cannot be removed, that one user's
 //! marketplaces are unreachable from another's, and that an install turns a
 //! directory in a repository into the same zipped bundle an upload would
-//! have produced — one per harness chosen.
+//! have produced.
 
 use flyco_core::{
     AddMarketplace, BUILT_IN_MARKETPLACE, CurrentUser, InstallCatalogSkill, MarketplaceView,
-    Problem, SkillCatalog, SkillScope, SkillView,
+    Problem, SkillCatalog, SkillView,
 };
 use skyzen_services::queue::ReceiveOptions;
 use skyzen_services::{Db, Kv, Queue, Storage};
@@ -303,17 +303,16 @@ async fn add_market<E: skyzen::Endpoint + Clone>(client: &TestClient<E>, token: 
 }
 
 /// Asks for one skill, whatever the request is.
-fn install(plugin: &str, name: &str, scopes: Vec<SkillScope>) -> InstallCatalogSkill {
+fn install(plugin: &str, name: &str) -> InstallCatalogSkill {
     InstallCatalogSkill {
         marketplace: MARKET.to_owned(),
         plugin: plugin.to_owned(),
         name: name.to_owned(),
-        scopes,
     }
 }
 
 #[skyzen::test]
-async fn installing_a_skill_stores_its_directory_once_per_harness(
+async fn installing_a_skill_stores_its_directory_as_one_row(
     ctx: TestContext,
     kv: Kv,
     db: Db,
@@ -332,31 +331,43 @@ async fn installing_a_skill_stores_its_directory_once_per_harness(
     let installed = client
         .post("/v1/catalog/skills")
         .bearer(&token)
-        .json(&install(
-            "document-skills",
-            "xlsx",
-            vec![SkillScope::Claude, SkillScope::Codex],
-        ))
+        .json(&install("document-skills", "xlsx"))
         .send()
         .await;
     installed.assert_status(201);
-    let installed = installed.json::<Vec<SkillView>>();
-    assert_eq!(installed.len(), 2);
-    assert_eq!(installed[0].scope, SkillScope::Claude);
-    assert_eq!(installed[1].scope, SkillScope::Codex);
-    assert!(installed.iter().all(|skill| skill.name == "xlsx"));
+    let installed = installed.json::<SkillView>();
+    assert_eq!(installed.name, "xlsx");
 
-    // It is now an ordinary skill, and its bundle is the directory.
+    // It is now an ordinary skill — one row, because the daemon mounts it
+    // into every harness's directory rather than one per harness.
     let listed = client
         .get("/v1/skills")
         .bearer(&token)
         .send()
         .await
         .json::<Vec<SkillView>>();
-    assert_eq!(listed.len(), 2);
+    assert_eq!(listed.len(), 1);
+
+    // And installing the same skill again replaces that row rather than
+    // adding to it: the name keeps the id it already had.
+    let again = client
+        .post("/v1/catalog/skills")
+        .bearer(&token)
+        .json(&install("document-skills", "xlsx"))
+        .send()
+        .await
+        .json::<SkillView>();
+    assert_eq!(again.id, installed.id);
+    let listed = client
+        .get("/v1/skills")
+        .bearer(&token)
+        .send()
+        .await
+        .json::<Vec<SkillView>>();
+    assert_eq!(listed.len(), 1);
 
     let bundle = storage
-        .get(&format!("skills/{}.zip", installed[0].id))
+        .get(&format!("skills/{}.zip", installed.id))
         .await
         .expect("read the object")
         .expect("the bundle is stored");
@@ -391,11 +402,7 @@ async fn an_install_that_cannot_be_served_says_which_of_the_three_it_is(
     let early = client
         .post("/v1/catalog/skills")
         .bearer(&token)
-        .json(&install(
-            "document-skills",
-            "xlsx",
-            vec![SkillScope::Claude],
-        ))
+        .json(&install("document-skills", "xlsx"))
         .send()
         .await;
     early.assert_status(409);
@@ -408,16 +415,11 @@ async fn an_install_that_cannot_be_served_says_which_of_the_three_it_is(
 
     run_queued_refresh(&db, &kv, &queue, 1).await;
 
-    // A skill the marketplace does not offer is a 404, and no scopes at all
-    // is a request that would install nothing.
+    // A skill the marketplace does not offer is a 404.
     let unknown = client
         .post("/v1/catalog/skills")
         .bearer(&token)
-        .json(&install(
-            "document-skills",
-            "nope",
-            vec![SkillScope::Claude],
-        ))
+        .json(&install("document-skills", "nope"))
         .send()
         .await;
     unknown.assert_status(404);
@@ -427,15 +429,6 @@ async fn an_install_that_cannot_be_served_says_which_of_the_three_it_is(
             .kind
             .ends_with("catalog-skill-not-found")
     );
-
-    let no_scope = client
-        .post("/v1/catalog/skills")
-        .bearer(&token)
-        .json(&install("document-skills", "xlsx", Vec::new()))
-        .send()
-        .await;
-    no_scope.assert_status(422);
-    assert!(no_scope.json::<Problem>().kind.ends_with("invalid-skill"));
 }
 
 #[skyzen::test]
@@ -458,16 +451,15 @@ async fn a_skill_of_a_plugin_in_another_repository_installs_from_that_repository
     let installed = client
         .post("/v1/catalog/skills")
         .bearer(&token)
-        .json(&install("elsewhere", "review", vec![SkillScope::Claude]))
+        .json(&install("elsewhere", "review"))
         .send()
         .await;
     installed.assert_status(201);
-    let installed = installed.json::<Vec<SkillView>>();
-    assert_eq!(installed.len(), 1);
-    assert_eq!(installed[0].name, "review");
+    let installed = installed.json::<SkillView>();
+    assert_eq!(installed.name, "review");
 
     let bundle = storage
-        .get(&format!("skills/{}.zip", installed[0].id))
+        .get(&format!("skills/{}.zip", installed.id))
         .await
         .expect("read the object")
         .expect("the bundle is stored");
@@ -511,11 +503,7 @@ async fn a_marketplace_somebody_else_added_cannot_be_installed_from(
     let refused = client
         .post("/v1/catalog/skills")
         .bearer(&other_token)
-        .json(&install(
-            "document-skills",
-            "xlsx",
-            vec![SkillScope::Claude],
-        ))
+        .json(&install("document-skills", "xlsx"))
         .send()
         .await;
     refused.assert_status(404);

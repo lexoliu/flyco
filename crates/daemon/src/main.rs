@@ -321,14 +321,14 @@ async fn report_failure_to<T>(
     Err(failure)
 }
 
-/// Installs the session owner's skills into the harness's global skills
-/// directory.
+/// Installs the session owner's skills into every harness's global
+/// skills directory on the machine.
 ///
 /// Called only with a control plane — the developer-machine REPL has no
-/// registry to ask and installs nothing — and only for a harness that has
-/// such a directory, which [`skills::target`] decides: Claude's config
-/// tree gets the `Claude` scope, Codex's `CODEX_HOME` gets the `Codex`
-/// one, and any other ACP agent gets nothing.
+/// registry to ask and installs nothing — and only when the machine has a
+/// skills directory to install into, which [`skills::targets`] decides:
+/// Claude's config tree or `~/.claude/skills`, and `CODEX_HOME` or
+/// `~/.codex/skills`, both mounted from the one registry.
 ///
 /// A control plane that cannot be reached is warned about, not failed
 /// on: the machine still has its checkout and a working harness, and a
@@ -337,10 +337,11 @@ async fn report_failure_to<T>(
 /// cannot be unpacked is the opposite case: the failure names the skill,
 /// and the user can act on it.
 async fn install_skills(config: &DaemonConfig, api: &HttpControlApi) -> Result<(), Failure> {
-    let Some(target) = skills::target(config) else {
+    let targets = skills::targets(config);
+    if targets.is_empty() {
         return Ok(());
-    };
-    match skills::install(api, &target).await {
+    }
+    match skills::install(api, &targets).await {
         Err(skills::SkillError::Control(error)) => {
             tracing::warn!(
                 %error,

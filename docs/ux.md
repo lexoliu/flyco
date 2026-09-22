@@ -1059,7 +1059,7 @@ cards, not from forms mirroring database rows.
 |---|---|
 | Agents | one card per harness: linked state, plan, usage bars, `Relink`, `Unlink`; below, `What works on each harness`, a collapsed matrix |
 | Compute | one compute card per linked account (§7); defaults: spot on/off, preferred region; `Add compute` |
-| Tools | MCP servers as cards with an enable toggle and `Edit`, added from the registry catalog or by hand; skills as cards with scope and date, added from a plugin marketplace or dropped in as a zip |
+| Tools | MCP servers as cards with an enable toggle and `Edit`, added from the registry catalog or by hand; skills as cards with an updated date, added from a plugin marketplace or dropped in as a zip |
 | Instructions | `AGENTS.md` editor with save; pending change requests from agents render as diffs with `Accept` / `Reject`; memory as an outliner tree |
 | Account | GitHub identity, API keys (create shows the key once), notifications with a single `Enable push` button, appearance, sign out |
 
@@ -1127,15 +1127,13 @@ offered to everybody, the user adds whichever others they trust, and flyco
 hosts no registry of its own — there is nothing to submit a skill to, and
 nothing to moderate.
 
-The page is linear and asks two things:
-
-1. **Which skill.** The shared search box over rows of directory name and
-   the sentence its `SKILL.md` gives for itself, grouped under the
-   marketplace each came from. A row is the answer.
-2. **Which agents get it**, with both already chosen. Claude Code and
-   Codex read their skills from different directories, so a skill is
-   installed once per harness picked; anyone who does not care presses
-   `Add skill` and the page returns to Tools with the new cards.
+The page asks one thing — **which skill** — over the shared search box
+and rows of directory name and the sentence its `SKILL.md` gives for
+itself, grouped under the marketplace each came from. A row is the
+answer and the click is the install, with no second question: a skill
+belongs to the user, not to a harness, so there is nothing to pick —
+flyco mounts it into every harness's skills directory, and the page
+returns to Tools with the new card.
 
 Under the picker sits the list of marketplaces, the built-in one first and
 without a `Remove`, and `Add marketplace` — one field, `owner/name`. flyco

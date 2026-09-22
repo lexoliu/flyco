@@ -1,23 +1,24 @@
-//! Installing the owner's skills into the harness's global skills
-//! directory.
+//! Installing the owner's skills into every harness's global skills
+//! directory on the machine.
 //!
 //! A skill is a zip uploaded on `Settings → Tools` or installed from a
 //! plugin marketplace, stored by the control plane and indexed in
-//! `skills`. Nothing pushes them to a machine: the daemon pulls the
-//! owner's whole registry at start — before the harness exists, because a
-//! harness reads this directory once at launch — and installs the scope
-//! its harness will read.
+//! `skills`. A skill belongs to the user, not to a harness: there is one
+//! registry, and the daemon pulls it whole at start — before the harness
+//! exists, because a harness reads its directory once at launch — and
+//! mounts the same set into every global skills directory the machine
+//! has.
 //!
-//! The directory is the harness's own: `<CLAUDE_CONFIG_DIR>/skills` for a
-//! Claude Code session with an isolated config tree, `<agent
-//! home>/.claude/skills` for one inheriting the host's login,
-//! `$CODEX_HOME/skills` for Codex. Every skill's directory is rewritten
-//! from its bundle on each start, so a replaced skill never lingers.
-//! Whether the rest of the directory is reconciled to the registry —
-//! directories nothing mounted are removed — depends on whose directory
-//! it is: an isolated config tree is flyco's and is made to match
-//! exactly, while a skills directory under the agent's own home may hold
-//! skills flyco never heard of, and those are left alone.
+//! The directories are the harnesses' own: `<CLAUDE_CONFIG_DIR>/skills`
+//! for a Claude Code session with an isolated config tree, `<agent
+//! home>/.claude/skills` without one, and `$CODEX_HOME/skills` or
+//! `<agent home>/.codex/skills` for Codex. Every skill's directory is
+//! rewritten from its bundle on each start, so a replaced skill never
+//! lingers. Whether the rest of a directory is reconciled to the
+//! registry — directories nothing mounted are removed — depends on
+//! whose directory it is: an isolated config tree is flyco's and is made
+//! to match exactly, while a skills directory under the agent's own home
+//! may hold skills flyco never heard of, and those are left alone.
 //!
 //! Files land read-only — a skill is changed by uploading a new bundle or
 //! installing it from a marketplace, never by the agent editing it in
@@ -42,7 +43,7 @@ use std::io::{Cursor, Read as _};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Component, Path, PathBuf};
 
-use flyco_core::{DriverKind, SkillMount, SkillScope};
+use flyco_core::{DriverKind, SkillMount};
 
 use crate::config::DaemonConfig;
 use crate::control::{ControlApi, ControlApiError};
@@ -67,16 +68,9 @@ const WRITABLE_DIR_MODE: u32 = 0o755;
 /// kill that already happened.
 const MAX_UNPACKED_BYTES: u64 = 256 * 1024 * 1024;
 
-/// The skills directory of the harness this config will run, when it has
-/// one.
-///
-/// `None` is a real answer, not a failure: an ACP agent other than Codex
-/// has no global skills directory flyco knows, and its session starts
-/// without one rather than with a guess.
+/// One harness's global skills directory on this machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
-    /// Which registry scope belongs in `dir`.
-    pub scope: SkillScope,
     /// The harness's global skills directory.
     pub dir: PathBuf,
     /// Whether `dir` is flyco's to reconcile.
@@ -90,49 +84,73 @@ pub struct Target {
     pub reconcile: bool,
 }
 
-/// Resolves the skills directory for the harness this config will run.
+/// Resolves every harness's global skills directory on this machine.
 ///
-/// The scope comes from the driver, the directory from the harness's own
-/// notion of home — Claude's `CLAUDE_CONFIG_DIR` relocates its whole
-/// `~/.claude` tree, skills included, so the isolated config dir is the
-/// target when the session injects credentials, and the agent's real home
-/// when it inherits one. A non-Codex ACP agent gets nothing and a log
-/// line saying why.
+/// Skills are the user's, not the session's harness's, so the list is
+/// every directory flyco knows rather than the one this session will
+/// read: a skill the user installed is there for Claude Code and for
+/// Codex alike, whichever one is running. Each directory comes from the
+/// harness's own notion of home — Claude's `CLAUDE_CONFIG_DIR` relocates
+/// its whole `~/.claude` tree, skills included, so the isolated config
+/// dir is the target when the session injects credentials, and the
+/// agent's real home when it inherits one; `CODEX_HOME` does the same
+/// for Codex. An empty list is a real answer, not a failure: with no
+/// agent home and no injected config there is no directory to install
+/// into.
 #[must_use]
-pub fn target(config: &DaemonConfig) -> Option<Target> {
-    match config.harness {
-        DriverKind::ClaudeCode => match config.claude().auth.isolation() {
-            Some(isolation) => Some(Target {
-                scope: SkillScope::Claude,
-                dir: isolation.config_dir.join("skills"),
-                reconcile: true,
-            }),
-            None => Some(Target {
-                scope: SkillScope::Claude,
-                dir: agent_home()?.join(".claude").join("skills"),
-                reconcile: false,
-            }),
-        },
-        DriverKind::Acp => {
-            let acp = config.acp();
-            if acp.agent != "codex" {
-                tracing::info!(
-                    agent = %acp.agent,
-                    "this ACP agent has no global skills directory; installing no skills"
-                );
-                return None;
-            }
-            let (home, reconcile) = match acp.env.get("CODEX_HOME") {
-                Some(home) => (PathBuf::from(home), true),
-                None => (agent_home()?.join(".codex"), false),
-            };
-            Some(Target {
-                scope: SkillScope::Codex,
-                dir: home.join("skills"),
-                reconcile,
-            })
+pub fn targets(config: &DaemonConfig) -> Vec<Target> {
+    let home = agent_home();
+    let mut dirs = Vec::new();
+
+    // Claude Code's global skills directory.
+    let claude = match config.harness {
+        DriverKind::ClaudeCode => config.claude().auth.isolation().map_or_else(
+            || {
+                home.as_ref().map(|home| Target {
+                    dir: home.join(".claude").join("skills"),
+                    reconcile: false,
+                })
+            },
+            |isolation| {
+                Some(Target {
+                    dir: isolation.config_dir.join("skills"),
+                    reconcile: true,
+                })
+            },
+        ),
+        DriverKind::Acp => home.as_ref().map(|home| Target {
+            dir: home.join(".claude").join("skills"),
+            reconcile: false,
+        }),
+    };
+    dirs.extend(claude);
+
+    // Codex's.
+    let codex = match config.harness {
+        DriverKind::Acp if config.acp().agent == "codex" => {
+            config.acp().env.get("CODEX_HOME").map_or_else(
+                || {
+                    home.as_ref().map(|home| Target {
+                        dir: home.join(".codex").join("skills"),
+                        reconcile: false,
+                    })
+                },
+                |codex_home| {
+                    Some(Target {
+                        dir: PathBuf::from(codex_home).join("skills"),
+                        reconcile: true,
+                    })
+                },
+            )
         }
-    }
+        _ => home.as_ref().map(|home| Target {
+            dir: home.join(".codex").join("skills"),
+            reconcile: false,
+        }),
+    };
+    dirs.extend(codex);
+
+    dirs
 }
 
 /// The home directory the agent process reads `~` under.
@@ -146,8 +164,8 @@ fn agent_home() -> Option<PathBuf> {
     )
 }
 
-/// Downloads each mounted bundle of the target's scope and installs it
-/// under `dir`, then reconciles the directory when it is flyco's.
+/// Downloads each mounted bundle once and installs it under every target
+/// directory, then reconciles each directory that is flyco's.
 ///
 /// The set is reconciled wholesale rather than patched: a skill the user
 /// replaced arrives as a fresh bundle under the same name, and a removed
@@ -157,25 +175,29 @@ fn agent_home() -> Option<PathBuf> {
 /// # Errors
 ///
 /// Returns [`SkillError`] if a bundle could not be fetched or unpacked, or
-/// the directory could not be rewritten. The error names the skill whose
+/// a directory could not be rewritten. The error names the skill whose
 /// install failed.
-pub async fn install(api: &impl ControlApi, target: &Target) -> Result<(), SkillError> {
+pub async fn install(api: &impl ControlApi, targets: &[Target]) -> Result<(), SkillError> {
     let mounts = api.list_skills().await?;
-    tokio::fs::create_dir_all(&target.dir)
-        .await
-        .map_err(|source| dir_err(&target.dir, source))?;
+    for target in targets {
+        tokio::fs::create_dir_all(&target.dir)
+            .await
+            .map_err(|source| dir_err(&target.dir, source))?;
+    }
     let mut keep = BTreeSet::new();
-    for mount in mounts.iter().filter(|mount| mount.scope == target.scope) {
+    for mount in &mounts {
         let bundle = api.skill_bundle(mount.id).await?;
-        materialize(&target.dir, mount, bundle).await?;
+        for target in targets {
+            materialize(&target.dir, mount, bundle.clone()).await?;
+        }
         keep.insert(mount.name.clone());
     }
-    if target.reconcile {
+    for target in targets.iter().filter(|target| target.reconcile) {
         prune(&target.dir, &keep).await?;
     }
     tracing::info!(
-        dir = %target.dir.display(),
         skills = keep.len(),
+        directories = targets.len(),
         "installed the owner's skills"
     );
     Ok(())
@@ -509,9 +531,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
     use std::path::PathBuf;
 
-    use flyco_core::{SkillId, SkillMount, SkillScope};
+    use flyco_core::{SessionId, SkillId, SkillMount};
 
-    use super::{materialize, prune, unpack};
+    use super::{Target, install, materialize, prune, unpack};
+    use crate::control::HttpControlApi;
+    use crate::testing::{ControlPlane, Reply};
 
     /// A directory of the process's own, removed when the test ends.
     struct TempDir(PathBuf);
@@ -538,7 +562,6 @@ mod tests {
         SkillMount {
             id: SkillId::generate(),
             name: name.to_owned(),
-            scope: SkillScope::Claude,
             size_bytes: 0,
         }
     }
@@ -565,6 +588,54 @@ mod tests {
             )
             .expect("start the symlink");
         writer.finish().expect("finish the zip").into_inner()
+    }
+
+    #[tokio::test]
+    async fn every_harness_directory_carries_the_skill() {
+        let claude = TempDir::new();
+        let codex = TempDir::new();
+        // One scripted answer for the mount list, then the bundle body the
+        // fetch asks for once.
+        let mounts = [mount("skill")];
+        let plane = ControlPlane::start(vec![
+            Reply::json(&mounts),
+            Reply {
+                status: 200,
+                headers: Vec::new(),
+                body: bundle(&[("SKILL.md", b"# shared"), ("scripts/run.sh", b"echo hi")]),
+            },
+        ])
+        .await;
+        let api = HttpControlApi::new(
+            plane.base.clone(),
+            SessionId::generate(),
+            "token".to_owned(),
+        );
+        install(
+            &api,
+            &[
+                Target {
+                    dir: claude.0.clone(),
+                    reconcile: true,
+                },
+                Target {
+                    dir: codex.0.clone(),
+                    reconcile: false,
+                },
+            ],
+        )
+        .await
+        .expect("install the skill everywhere");
+        for dir in [&claude.0, &codex.0] {
+            assert_eq!(
+                std::fs::read(dir.join("skill/SKILL.md")).expect("read SKILL.md"),
+                b"# shared"
+            );
+            assert_eq!(
+                std::fs::read(dir.join("skill/scripts/run.sh")).expect("read run.sh"),
+                b"echo hi"
+            );
+        }
     }
 
     #[tokio::test]
