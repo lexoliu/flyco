@@ -30,8 +30,8 @@ use skyzen::sql;
 use skyzen_services::queue::{
     QueueBatch, QueueBatchDisposition, QueueMessage, QueueMessageDisposition, ReceiveOptions,
 };
-use skyzen_services::{Db, Kv, Queue};
-use skyzen_test::mock::InMemoryQueue;
+use skyzen_services::{Db, Kv, Queue, Storage};
+use skyzen_test::mock::{InMemoryQueue, InMemoryStorage};
 use skyzen_test::{TestClient, TestContext};
 
 use crate::catalog::{self, RegionCatalog, RegionOutcome};
@@ -40,8 +40,9 @@ use crate::provisioning_queue::{self, MAX_ATTEMPTS, ProvisioningJob};
 use crate::rooms::Rooms;
 use crate::testing::{
     GITHUB_ACCESS_TOKEN, GITHUB_COMMIT_EMAIL, GITHUB_NAME, HARNESS_TOKEN, TEST_DEFAULT_BRANCH,
-    TestGithub, machine_choice, migrated_router_on, seed_azure_account, seed_harness_account,
-    seed_provider_account, seed_user, test_config, test_host_rooms, test_rooms, test_vendors,
+    TestGithub, machine_choice, migrated_router_on, release_bucket, seed_azure_account,
+    seed_harness_account, seed_provider_account, seed_user, test_config, test_host_rooms,
+    test_rooms, test_vendors,
 };
 use crate::vendors::Vendors;
 use crate::{machines, session, sessions};
@@ -366,7 +367,7 @@ async fn run_queue_as(
         kv,
         queue,
         &test_rooms(),
-        &mut clients(provisioner, &github, &test_vendors()),
+        &mut clients(provisioner, &github, &test_vendors(), &release_bucket().await),
         batch,
     )
     .await
@@ -387,7 +388,7 @@ async fn run_queue_watching(
         kv,
         queue,
         rooms,
-        &mut clients(provisioner, &TestGithub::default(), &test_vendors()),
+        &mut clients(provisioner, &TestGithub::default(), &test_vendors(), &release_bucket().await),
         batch,
     )
     .await
@@ -402,11 +403,13 @@ fn clients<'a>(
     provisioner: &'a mut RecordedHost,
     github: &'a TestGithub,
     vendors: &'a Vendors,
+    storage: &'a Storage,
 ) -> provisioning_queue::Clients<'a, RecordedHost, TestGithub> {
     provisioning_queue::Clients {
         provisioner,
         vendors,
         github,
+        storage,
     }
 }
 
@@ -450,7 +453,7 @@ async fn run_job_twice(
             kv,
             queue,
             &test_rooms(),
-            &mut clients(provisioner, &TestGithub::default(), &test_vendors()),
+            &mut clients(provisioner, &TestGithub::default(), &test_vendors(), &release_bucket().await),
             batch(job.clone()),
         )
         .await;
@@ -977,7 +980,7 @@ async fn an_unreachable_host_is_retried_a_bounded_number_of_times(
             &kv,
             &queue,
             &test_rooms(),
-            &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
+            &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
             batch(job),
         )
         .await;
@@ -1050,7 +1053,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &kv,
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
+        &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
         original,
     )
     .await;
@@ -1090,7 +1093,7 @@ async fn an_archived_session_comes_back_through_the_same_queue(
         &kv,
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
+        &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
         queued,
     )
     .await;
@@ -1179,7 +1182,7 @@ async fn a_job_for_a_session_that_is_gone_is_dropped(kv: Kv, db: Db, queue: Queu
         &kv,
         &queue,
         &test_rooms(),
-        &mut clients(&mut host, &TestGithub::default(), &test_vendors()),
+        &mut clients(&mut host, &TestGithub::default(), &test_vendors(), &release_bucket().await),
         batch(orphan),
     )
     .await;
@@ -1821,6 +1824,81 @@ async fn a_provision_reads_on_demand_when_the_cache_cannot_answer(
             .is_some_and(|failure| failure.contains("resource group")),
         "the session should fail with the provider's own refusal, got {:?}",
         detail.failure
+    );
+}
+
+#[skyzen::test]
+async fn a_machine_with_no_daemon_to_install_fails_before_it_is_built(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+) {
+    // This test reads the queue's backend for the same reason the retry one
+    // does: the answer it wants — that nothing was asked again — is a
+    // message that must never be there.
+    let backend = InMemoryQueue::new();
+    let queue = Queue::new(backend.clone());
+    let router = migrated_router_on(&db, queue.clone()).await;
+    let caller = sign_in(&kv, &db).await;
+    let client = ctx.client(router);
+
+    let account = seed_azure_account(&db, caller.user).await;
+    catalog::record_region(
+        &kv,
+        account,
+        RegionCatalog {
+            region: AZURE_REGION.to_owned(),
+            read_at_unix: crate::clock::now_unix(),
+            outcome: RegionOutcome::Offered {
+                entries: vec![azure_entry(account)],
+            },
+        },
+    )
+    .await
+    .expect("cache the account's catalog");
+
+    let session = open_azure(&client, &caller, account).await.summary.id;
+    let mut host = RecordedHost::healthy();
+    // An empty bucket is a release that never shipped the daemon this
+    // control plane speaks: the state #382 came out of. A machine that
+    // booted anyway would install nothing and wait its fifteen minutes to
+    // die; the consumer fails it before the provider is asked.
+    let bucket = Storage::new(InMemoryStorage::new());
+    let job = drain(&queue).await.messages.remove(0).body;
+    provisioning_queue::consume(
+        &db,
+        &test_config(),
+        &kv,
+        &queue,
+        &test_rooms(),
+        &mut clients(
+            &mut host,
+            &TestGithub::default(),
+            &test_vendors(),
+            &bucket,
+        ),
+        batch(job),
+    )
+    .await;
+
+    // The provider was never asked: this is not a provision that failed, it
+    // is a provision that could never have come up.
+    assert_eq!(host.provisions, 0);
+    let detail = read(&client, &caller, session).await;
+    assert_eq!(detail.summary.state, SessionState::Failed);
+    assert!(
+        detail
+            .failure
+            .as_deref()
+            .is_some_and(|failure| {
+                failure.contains("wire protocol") && failure.contains("resume")
+            }),
+        "the sentence names what the machine could not get and what to do: {:?}",
+        detail.failure
+    );
+    assert!(
+        queued(&backend).is_empty(),
+        "a failure that cannot change was not asked again"
     );
 }
 

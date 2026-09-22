@@ -22,8 +22,8 @@ use crate::provisioning::CloudProvisioner;
 use crate::provisioning_queue::{self, ProvisioningJob};
 use crate::session;
 use crate::testing::{
-    TestGithub, migrated_router_on, seed_azure_account, seed_provider_account, seed_user,
-    test_config, test_host_rooms, test_rooms, test_vendors,
+    TestGithub, migrated_router_on, release_bucket, seed_azure_account, seed_provider_account,
+    seed_user, test_config, test_host_rooms, test_rooms, test_vendors,
 };
 
 const CATALOG: &str = "/v1/machines/catalog";
@@ -127,6 +127,7 @@ async fn run_queue(db: &Db, kv: &Kv, queue: &Queue) {
             provisioner: &mut provisioner,
             vendors: &vendors,
             github: &github,
+            storage: &release_bucket().await,
         },
         QueueBatch {
             queue: "provisioning".to_owned(),
