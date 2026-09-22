@@ -40,10 +40,16 @@ const PROVIDERS: S["ProviderAccountView"][] = [
   { id: HOST_ACCOUNT, kind: "host", label: "mbp-m3", linked_at_unix: NOW - 3 * DAY, host_id: HOST_ID },
 ];
 
+// The list Claude Code itself serves, verbatim: five rows, and the
+// default named for the model it resolves to rather than for itself. A
+// three-row fixture fitted under the composer whatever the room, which
+// is exactly the case the picker's placement does not have to get right.
 const CLAUDE_MODELS: S["ModelOption"][] = [
-  { id: "default", label: "Default (recommended)", description: "Fable 5.1 · Most capable, for complex work", is_default: true, efforts: ["low", "medium", "high"], default_effort: "medium" },
-  { id: "claude-fable-5-1", label: "Fable 5.1", description: "Fable 5.1 · Most capable, for complex work", is_default: false, efforts: ["low", "medium", "high"], default_effort: "high" },
-  { id: "claude-sonnet-5", label: "Sonnet 5", description: "Sonnet 5 · Fast and capable for everyday coding", is_default: false, efforts: [], default_effort: null },
+  { id: "default", label: "Default (recommended)", description: "Sonnet 5 · Efficient for routine tasks", is_default: true, efforts: ["low", "medium", "high"], default_effort: "medium" },
+  { id: "sonnet", label: "Sonnet", description: "Sonnet 5 · Efficient for routine tasks", is_default: false, efforts: ["low", "medium", "high"], default_effort: "medium" },
+  { id: "fable", label: "Fable", description: "Fable 5 · Most capable for your hardest and longest-running tasks", is_default: false, efforts: ["low", "medium", "high", "xhigh"], default_effort: "high" },
+  { id: "opus", label: "Opus", description: "Opus 5 · Best for everyday, complex tasks", is_default: false, efforts: ["low", "medium", "high"], default_effort: "medium" },
+  { id: "haiku", label: "Haiku", description: "Haiku 4.5 · Fastest for quick answers", is_default: false, efforts: [], default_effort: null },
 ];
 
 const HARNESS_ACCOUNTS: S["HarnessAccountView"][] = [
@@ -378,7 +384,7 @@ const BUDGET_EVENTS = stored([
   { at: T0 + 600, event: { type: "shell_command", run: "run-1", command: "git status --short" } },
   { at: T0 + 601, event: { type: "shell_output", run: "run-1", stream: "stdout", data: " M crates/api/src/app.rs\n M crates/api/src/error.rs\n?? crates/api/src/request_budget.rs\n?? migrations/0033_request_budgets.sql\n" } },
   { at: T0 + 601, event: { type: "shell_exited", run: "run-1", outcome: { kind: "exited", code: 0 }, truncated: false } },
-  { at: T0 + 700, event: { type: "model_changed", model: { model: "claude-fable-5-1", effort: "high" } } },
+  { at: T0 + 700, event: { type: "model_changed", model: { model: "fable", effort: "high" } } },
   {
     at: T0 + 900,
     event: { type: "user_message", origin: "user", text: "Yes. Also coalesce the daemon's frame batches over half a second so a busy terminal is bounded to two requests a second." },

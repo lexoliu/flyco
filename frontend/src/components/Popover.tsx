@@ -126,6 +126,12 @@ export default function Popover(props: PopoverProps) {
     // and the side the panel then picks is the wrong one.
     panel?.focus({ preventScroll: true });
 
+    // The viewport height the side was decided against, so a content swap
+    // re-fits the height without re-deciding the side. Declared in the
+    // effect body, which re-runs per opening: a panel reopened somewhere
+    // else on the page decides again.
+    let decided = NaN;
+
     // What the panel may not do is hang off the viewport: a picker whose
     // bottom half is off screen, on a page that does not scroll, is a
     // control nobody can reach. So the panel gets a side and a height from
@@ -167,9 +173,24 @@ export default function Popover(props: PopoverProps) {
       const anchorBox = anchor.getBoundingClientRect();
       const below = window.innerHeight - anchorBox.bottom - VIEWPORT_MARGIN_PX;
       const above = anchorBox.top - VIEWPORT_MARGIN_PX;
-      const flip = wanted > below && above > below;
-      setFlipped(flip);
-      const room = flip ? above : below;
+      // The side belongs to the opening, not to the view. A panel whose
+      // contents change while it is open — the model picker's rail
+      // trading places with its taller list — kept re-deciding, and a
+      // taller view flipped it over the trigger: the rows the user was
+      // reaching for jumped from under the pointer to above it, and the
+      // hand had to travel back the way it came. So the choice is made
+      // once and the panel grows downward into whatever room is there,
+      // scrolling inside it when the room runs out. Only the viewport
+      // changing size is allowed to re-decide, because then the room the
+      // first decision was made against is gone.
+      if (decided !== window.innerHeight) {
+        decided = window.innerHeight;
+        setFlipped(wanted > below && above > below);
+      }
+      // Untracked: this runs inside the effect that owns `decided`, and a
+      // tracked read would make the flip itself re-run that effect and
+      // throw the decision away — the one thing the decision is for.
+      const room = untrack(flipped) ? above : below;
       panel.style.maxHeight = `${Math.max(room, MIN_PANEL_PX)}px`;
     }
     fit();
