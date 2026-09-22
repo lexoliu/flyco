@@ -629,6 +629,9 @@ class Session {
       // anything: the composer's rings are right for the first message
       // rather than only after the first turn has been paid for.
       await this.reportUsage();
+      // And what the window holds before anything has been said, so the
+      // panel opens on a breakdown rather than on a button.
+      await this.contextUsage();
     } catch (error) {
       // Shutting down rejects every in-flight control request; that is the
       // exit path, not a failure.
@@ -774,6 +777,13 @@ class Session {
       // timer that would poll the vendor through every idle hour.
       if (message.type === "result" && !this.closing) {
         await this.reportUsage();
+        // And what the window holds, unasked. The CLI computes the
+        // breakdown locally — nothing is sent to the API — and reporting
+        // it at the end of every turn is what lets a session whose machine
+        // has since been suspended still say where its context went: the
+        // answer is already in the session's stream, so nothing has to be
+        // woken to ask for it (flyco #381's neighbour).
+        await this.contextUsage();
       }
     }
   }

@@ -23,7 +23,31 @@ export function defaultChoice(models: readonly ModelOption[]): ModelChoice {
   if (preferred === undefined) {
     throw new Error("The agent offers no models to choose from.");
   }
-  return { model: preferred.id };
+  const effort = openingEffort(preferred);
+  return effort === undefined ? { model: preferred.id } : { model: preferred.id, effort };
+}
+
+/**
+ * The level a model opens on before anyone moves the slider, or
+ * `undefined` for a model that takes no level at all.
+ *
+ * The harness's own default where it states one — Codex does, on every
+ * row — and `medium` otherwise: the Claude SDK reports no default, and a
+ * rail has to put the thumb somewhere. The level is then sent with the
+ * model rather than left out, so what the chip reads is what the turn
+ * runs at; a rail whose thumb sat on a level the run did not use would be
+ * a lie the user cannot see through.
+ */
+export function openingEffort(option: ModelOption): string | undefined {
+  const levels = option.efforts;
+  const stated = option.default_effort;
+  if (stated !== undefined && stated !== null && levels.includes(stated)) {
+    return stated;
+  }
+  if (levels.includes("medium")) {
+    return "medium";
+  }
+  return levels[Math.floor((levels.length - 1) / 2)];
 }
 
 /** The entry a choice names, or `undefined` for an id the list no longer carries. */

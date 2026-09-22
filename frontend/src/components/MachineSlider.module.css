@@ -193,9 +193,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .readingTravel,
-  .reading,
-  .thumbTravel,
-  .thumb {
+  .reading {
     transition: none;
   }
 }

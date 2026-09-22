@@ -20,6 +20,7 @@ import { A, useMatch } from "@solidjs/router";
 import { createQuery } from "../lib/query";
 import { listSessions, type SessionSummary } from "../api/client";
 import { cx } from "../lib/cx";
+import Skeleton from "./Skeleton";
 import { deriveStatus, isArchived, type StatusView } from "../lib/status";
 import styles from "./SessionNav.module.css";
 
@@ -125,11 +126,17 @@ export default function SessionNav(props: SessionNavProps) {
         <Show
           when={visible().length > 0}
           fallback={
-            <p class={styles.empty}>
-              <Show when={!sessions.loading} fallback="Loading…">
+            /*
+              Nothing is said about an empty list until the list has been
+              read: the rail used to render "No sessions yet" in the
+              moment before the first response and correct itself a frame
+              later, which is the flash a person sees on every load.
+            */
+            <Show when={sessions.settled} fallback={<Skeleton lines={6} />}>
+              <p class={styles.empty}>
                 {showArchived() ? "Nothing archived." : "No sessions yet."}
-              </Show>
-            </p>
+              </p>
+            </Show>
           }
         >
           <For each={groups()}>

@@ -90,11 +90,6 @@ export default function ComputeSection() {
     <section class={styles.section}>
       <header class={styles.sectionHead}>
         <h2>Compute</h2>
-        <p class={styles.lede}>
-          Sessions run on machines in your own cloud accounts, or on hardware you enrolled, so you
-          keep the bill, the region and the data. Spot capacity is the default for every new
-          session.
-        </p>
       </header>
 
       <ProblemNotice error={readiness.error() ?? hosts.error ?? usage.error} />

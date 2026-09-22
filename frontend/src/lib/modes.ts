@@ -14,6 +14,15 @@ import type { PermissionMode } from "../api/wire";
 
 type HarnessKind = components["schemas"]["HarnessKind"];
 
+/**
+ * The mark a mode carries, as a name its picker resolves to a glyph.
+ *
+ * A row of five sentences is read word by word; a row of five marks is
+ * read at a glance, and the mark is what the chip then carries so the
+ * closed control says which one is on without being read at all.
+ */
+export type ModeIcon = "auto" | "ask" | "read" | "edits" | "open" | "refuse";
+
 /** A row in the mode picker: the mode's id and what the row says. */
 export interface ModeOption {
   id: PermissionMode;
@@ -21,40 +30,59 @@ export interface ModeOption {
   label: string;
   /** What the mode does, in the picker's second line. */
   description: string;
+  /** Which mark stands beside it. */
+  icon: ModeIcon;
+  /** Whether the mode gives everything away, and is coloured for it. */
+  unrestricted?: boolean;
 }
 
 const AUTO: ModeOption = {
   id: "auto",
   label: "Auto",
-  description: "The agent decides what needs asking; routine work runs through.",
+  description: "The agent decides what needs asking.",
+  icon: "auto",
 };
-const DEFAULT: ModeOption = {
+/**
+ * The harness's own rules, which for every harness flyco drives means
+ * asking before anything that is not already allowed.
+ *
+ * Named for what it does rather than for its place in the list: `Default`
+ * told the user only that somebody else had decided, which is not a
+ * choice anybody can make.
+ */
+const ASK: ModeOption = {
   id: "default",
-  label: "Default",
-  description: "The harness's own permission rules decide, unchanged.",
+  label: "Ask",
+  description: "Anything not already allowed asks first.",
+  icon: "ask",
 };
 const PLAN: ModeOption = {
   id: "plan",
   label: "Plan",
-  description: "Read-only. The agent researches and proposes; nothing changes.",
+  description: "Read-only: it researches and proposes.",
+  icon: "read",
 };
 const ACCEPT_EDITS: ModeOption = {
   id: "acceptEdits",
   label: "Accept edits",
-  description: "File edits apply without asking; commands still ask.",
+  description: "Edits apply; commands still ask.",
+  icon: "edits",
 };
 const BYPASS: ModeOption = {
   id: "bypassPermissions",
   label: "Yolo",
-  description: "Nothing asks. Every command and edit runs immediately.",
+  description: "Nothing asks. Every command and edit runs.",
+  icon: "open",
+  unrestricted: true,
 };
 const DONT_ASK: ModeOption = {
   id: "dontAsk",
   label: "Don't ask",
-  description: "Whatever is not already allowed is refused instead of asked.",
+  description: "Anything not already allowed is refused.",
+  icon: "refuse",
 };
 
-const MODES: readonly ModeOption[] = [AUTO, DEFAULT, PLAN, ACCEPT_EDITS, BYPASS, DONT_ASK];
+const MODES: readonly ModeOption[] = [AUTO, ASK, PLAN, ACCEPT_EDITS, BYPASS, DONT_ASK];
 
 /**
  * The modes a harness's picker offers, in menu order.

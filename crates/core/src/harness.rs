@@ -1015,35 +1015,70 @@ pub struct HarnessAccountView {
     /// per account would be a picker that renders after the form it belongs
     /// to.
     pub models: Vec<ModelOption>,
-    /// How much of this account's plan is spent, per rolling window.
+    /// How much of this account's plan is spent, read from the vendor
+    /// while answering this request.
     ///
-    /// The last snapshot a session on this account filed, and empty until
-    /// one has. Carried on the account for the same reason
-    /// [`Self::models`] is — Settings reads the account and nothing else —
-    /// and it is what the settings row draws its bars from.
-    pub usage: Vec<crate::wire::UsageWindow>,
+    /// Carried on the account for the same reason [`Self::models`] is —
+    /// Settings reads the account and nothing else — and it is what the
+    /// settings row draws its bars from. Never a stored reading: a plan
+    /// moves whether or not flyco is watching, so anything but a live one
+    /// is a number that was true once and is drawn as if it were true now.
+    pub usage: PlanUsage,
 }
 
-/// Request body of `PUT /v1/sessions/{id}/usage`.
+/// What flyco can say about one account's plan right now.
 ///
-/// What a session's daemon reports when its harness answers how much of the
-/// plan is spent: at start, and after every turn. Recorded against the
-/// account rather than the session, because the plan is the account's and
-/// two sessions on one account share it.
+/// Three outcomes, and they are not interchangeable: a plan flyco read, a
+/// credential with no plan behind it, and a vendor that would not answer.
+/// Drawing the last two as an empty set of windows is what made a dead
+/// plan look like an untouched one — so the state is on the wire and the
+/// UI says which of the three it is.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
-pub struct ReportUsage {
-    /// Every window the harness reported, in no particular order.
-    pub windows: Vec<crate::wire::UsageWindow>,
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum PlanUsage {
+    /// The windows the vendor stated, as of this request.
+    ///
+    /// Empty when the vendor answered and named no window, which is a
+    /// plan with nothing to draw rather than a failure to read one.
+    Windows {
+        /// Every window the vendor stated, in no particular order; the UI
+        /// sorts them by
+        /// [`window_minutes`](crate::wire::UsageWindow::window_minutes).
+        windows: Vec<crate::wire::UsageWindow>,
+    },
+    /// There is no plan behind this credential.
+    ///
+    /// An API key bills per token and has no rolling window, so there is
+    /// nothing to read and nothing to draw.
+    Unmetered,
+    /// The vendor could not be read, and why.
+    ///
+    /// The plan is whatever it was; flyco simply does not know it, and
+    /// says so rather than drawing a ring at zero.
+    Unavailable {
+        /// What went wrong, in the vendor's own words where it gave any.
+        reason: String,
+    },
+}
+
+impl PlanUsage {
+    /// The windows to draw, and none where there is nothing to say.
+    #[must_use]
+    pub fn windows(&self) -> &[crate::wire::UsageWindow] {
+        match self {
+            Self::Windows { windows } => windows,
+            Self::Unmetered | Self::Unavailable { .. } => &[],
+        }
+    }
 }
 
 /// Request body of `POST /v1/sessions/{id}/usage-limit`.
 ///
 /// The one fact a session's daemon holds that stops it working: the
 /// harness refused a turn because a window of the account's plan is spent.
-/// Reported separately from [`ReportUsage`] beside it because the two are
-/// read by different things — a snapshot fills the rings, and this pauses
-/// the session and schedules its return — and because a snapshot is filed
-/// after every turn while this is filed once per limit.
+/// The only plan reading the daemon files at all — the rings are read from
+/// the vendor by the control plane ([`PlanUsage`]), and this is not a
+/// reading but an event: it pauses the session and schedules its return.
 ///
 /// The control plane refuses a window that names no reset: the whole of
 /// what it does with this is stop the machine until a stated instant, and

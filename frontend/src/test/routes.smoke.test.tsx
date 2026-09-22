@@ -17,6 +17,8 @@ import ConnectReturn from "../routes/connect/Return";
 import SessionDetail from "../routes/SessionDetail";
 import SettingsLayout from "../routes/settings/SettingsLayout";
 import AgentsSection from "../routes/settings/AgentsSection";
+import ApiKeysSection from "../routes/settings/ApiKeysSection";
+import PreferencesSection from "../routes/settings/PreferencesSection";
 import ComputeSection from "../routes/settings/ComputeSection";
 import ToolsSection from "../routes/settings/ToolsSection";
 import McpCatalog from "../routes/settings/McpCatalog";
@@ -73,6 +75,8 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
         <Route path="/tools/mcp-catalog" component={McpCatalog} />
         <Route path="/tools/skill-catalog" component={SkillCatalog} />
         <Route path="/instructions" component={InstructionsSection} />
+        <Route path="/api-keys" component={ApiKeysSection} />
+        <Route path="/preferences" component={PreferencesSection} />
         <Route path="/account" component={AccountSection} />
       </Route>
       <Route path="*404" component={NotFound} />
@@ -311,7 +315,7 @@ describe("route smoke tests", () => {
               linked_at_unix: 1_787_000_000,
               expires_at_unix: 1_787_028_800,
               models: [],
-              usage: [],
+              usage: { state: "unmetered" as const },
             },
           ]),
           { status: 200, headers: { "content-type": "application/json" } },
@@ -754,18 +758,14 @@ describe("route smoke tests", () => {
     expect(queryByLabelText("Message the agent")).not.toBeInTheDocument();
   });
 
-  it("keeps a suspended session's composer open, because the message is the wake", async () => {
-    // docs/ux.md §9.9: an interrupted session is the one stopped state
-    // that still takes a message — sending is what starts the machine.
+  it("covers a suspended session's composer with the notice that resumes it", async () => {
+    // The machine is off, and the one thing to do about it is on the
+    // notice. The box stays on the page — it is where typing resumes —
+    // but it is inert under the notice until the machine is back.
     const base = vi.mocked(fetch).getMockImplementation();
-    const sent: string[] = [];
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const url = new URL(String(input instanceof Request ? input.url : input));
       const method = (init?.method ?? "GET").toUpperCase();
-      if (method === "POST" && url.pathname === "/v1/sessions/abc-123/messages") {
-        sent.push(String(init?.body ?? ""));
-        return new Response(null, { status: 204 });
-      }
       if (method !== "GET") {
         return base!(input, init);
       }
@@ -793,43 +793,15 @@ describe("route smoke tests", () => {
       return base!(input, init);
     });
 
-    const { findByRole, findByText, getByLabelText, getByRole, queryByRole } =
-      renderAt("/sessions/abc-123");
+    const { findByRole, getByLabelText, getByRole } = renderAt("/sessions/abc-123");
 
     const state = await findByRole("region", { name: "Session state" });
     expect(state.textContent).toContain("Interrupted · suspended");
-    expect(state.textContent).toContain("the disk is kept");
+    expect(state.textContent).toContain("Its disk is kept");
+    expect(getByRole("button", { name: "Resume" })).toBeInTheDocument();
 
-    // The composer stays open under the notice and says where the message
-    // goes before it is typed.
-    const field = getByLabelText("Message the agent") as HTMLTextAreaElement;
-    expect(await findByText("Sent when the machine is back")).toBeInTheDocument();
-
-    type(field, "pick up where you left off");
-    fireEvent.keyDown(field, { key: "Enter" });
-
-    // Sending is what starts the machine, so it is asked first — with what
-    // the machine is and what it costs — and nothing has been sent yet.
-    const ask = await findByRole("alertdialog", { name: "Start the machine?" });
-    expect(ask.textContent).toContain("Starting it takes about a minute");
-    expect(ask.textContent).toContain("Your message is sent once it is back");
-    expect(sent).toHaveLength(0);
-
-    // "Not now" keeps the draft where it was typed.
-    fireEvent.click(getByRole("button", { name: "Not now" }));
-    await vi.waitFor(() => expect(queryByRole("alertdialog", { name: "Start the machine?" })).toBeNull());
-    expect(field.value).toBe("pick up where you left off");
-    expect(sent).toHaveLength(0);
-
-    // Sent again and confirmed, the message goes — and the field clears.
-    fireEvent.keyDown(field, { key: "Enter" });
-    fireEvent.click(await findByRole("button", { name: "Start and send" }));
-
-    await vi.waitFor(() => expect(sent).toHaveLength(1));
-    expect(JSON.parse(sent[0] ?? "{}")).toEqual({
-      text: "pick up where you left off",
-    });
-    await vi.waitFor(() => expect(field.value).toBe(""));
+    const field = getByLabelText("Message the agent");
+    expect(field.closest("[inert]")).not.toBeNull();
   });
 
   it("refuses a shell command while the suspended session's machine is off", async () => {
@@ -931,7 +903,7 @@ describe("route smoke tests", () => {
               linked_at_unix: 1_787_000_000,
               expires_at_unix: null,
               models: [],
-              usage: [],
+              usage: { state: "unmetered" as const },
             },
           ]),
           { status: 200, headers: { "content-type": "application/json" } },
@@ -991,16 +963,12 @@ describe("route smoke tests", () => {
   });
 
   it("renders /settings/agents with a card for each harness", async () => {
-    const { findByRole, getAllByText, getByText } =
-      renderAt("/settings/agents");
+    const { findByRole, getAllByText } = renderAt("/settings/agents");
     expect(
       await findByRole("heading", { level: 2, name: "Agents" }),
     ).toBeInTheDocument();
-    // Both harnesses are named twice: once on their card, once in the
-    // capability matrix under the disclosure.
     expect(getAllByText("Claude Code").length).toBeGreaterThan(0);
     expect(getAllByText("Codex").length).toBeGreaterThan(0);
-    expect(getByText("What works on each harness")).toBeInTheDocument();
     expect(getAllByText("Not linked")).toHaveLength(3);
   });
 
@@ -1117,16 +1085,33 @@ describe("route smoke tests", () => {
     expect(await findByLabelText("AGENTS.md")).toBeInTheDocument();
   });
 
-  it("renders /settings/account, handling an unconfigured VAPID key calmly", async () => {
-    const { findByRole, findByText, getByRole } = renderAt("/settings/account");
+  it("renders /settings/account as the identity and the way out", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/account");
     expect(
       await findByRole("heading", { level: 2, name: "Account" }),
     ).toBeInTheDocument();
-    expect(getByRole("group", { name: "Theme" })).toBeInTheDocument();
     expect(getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  });
+
+  it("renders /settings/preferences, handling an unconfigured VAPID key calmly", async () => {
+    const { findByRole, findByText, getByRole } = renderAt("/settings/preferences");
+    expect(
+      await findByRole("heading", { level: 2, name: "Preferences" }),
+    ).toBeInTheDocument();
+    expect(getByRole("group", { name: "Theme" })).toBeInTheDocument();
+    expect(getByRole("group", { name: "Interface size" })).toBeInTheDocument();
+    expect(getByRole("group", { name: "Transcript font" })).toBeInTheDocument();
     // Push is unavailable in jsdom and the VAPID key is unconfigured; the
     // card says so instead of offering a button that cannot work.
     expect(await findByText("Unsupported here")).toBeInTheDocument();
+  });
+
+  it("renders /settings/api-keys as its own section", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/api-keys");
+    expect(
+      await findByRole("heading", { level: 2, name: "API keys" }),
+    ).toBeInTheDocument();
+    expect(getByRole("button", { name: /Create key/ })).toBeInTheDocument();
   });
 
   it("renders an unknown path as the 404 page", () => {

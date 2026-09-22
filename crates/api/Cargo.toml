@@ -40,6 +40,9 @@ hex.workspace = true
 hmac.workspace = true
 http.workspace = true
 sha2.workspace = true
+# Parses the ISO 8601 instants Anthropic states a plan window's turnover
+# in; everything flyco stores or draws is a Unix second.
+time = { workspace = true, features = ["parsing"] }
 url.workspace = true
 utoipa.workspace = true
 # The GUID a role assignment is addressed by: Azure creates one by `PUT`ting

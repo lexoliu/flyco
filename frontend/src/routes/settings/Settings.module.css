@@ -12,10 +12,13 @@
 
 /* ── Layout ──────────────────────────────────────────────────────────── */
 
+/* Wide enough for three cards in a row, which is how many agents there
+   are: at 800px the third wrapped onto a line of its own while the window
+   beside it stood empty. */
 .page {
   flex: 1;
   width: 100%;
-  max-width: 800px;
+  max-width: 1120px;
   margin: 0;
   padding: var(--space-7) var(--space-7) var(--space-8);
 }
@@ -68,10 +71,10 @@
   gap: var(--space-3);
 }
 
-/* Two across once there is room, so a pair of harnesses or providers reads
-   as a pair rather than as a column of banners. */
+/* As many across as fit, so three harnesses read as one row rather than
+   a pair and an orphan. */
 .cardsPaired {
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
 }
 
 .card {
@@ -151,6 +154,22 @@
   gap: var(--space-2);
   margin-left: auto;
   flex-shrink: 0;
+}
+
+/* The account row inside an agent card.
+   Three cards share the row, so each is about a third of the page wide:
+   `Linked Sep 9, 2026 · Expires in 5 days` and two pills do not fit on one
+   line, and side by side the meta wrapped into three. The pills take their
+   own line beneath it, right-aligned. */
+.accountTop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.accountTop .actions {
+  margin-left: auto;
 }
 
 .cardBody {

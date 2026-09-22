@@ -44,10 +44,10 @@ import {
   FORM_TITLE,
   MACHINE_FORMS,
   OS_LABEL,
-  autoSentence,
   billingMinimum,
   billingMinimumSentence,
   detentLabel,
+  priceLabel,
   entryKey,
   formOf,
   type MachineForm,
@@ -251,18 +251,9 @@ export default function MachineSlider(props: MachineSliderProps) {
   /** The name over the thumb. */
   const reading = createMemo(() => {
     const entry = selected();
-    return entry === undefined ? "" : detentLabel(entry, props.spot);
+    return entry === undefined ? "" : detentLabel(entry);
   });
 
-  /**
-   * What `Auto` resolved to, said as a sentence.
-   *
-   * Read off the machine flyco would actually provision rather than stated
-   * as a constant: hardware the user enrolled has no price to be cheapest
-   * at, so the rule about being cheapest would be a claim about a decision
-   * that was never made.
-   */
-  const rule = createMemo(() => autoSentence(props.automatic?.entry));
 
   /** Whether the chosen machine starts billing the moment it boots. */
   const bound = createMemo(() => {
@@ -279,7 +270,11 @@ export default function MachineSlider(props: MachineSliderProps) {
    */
   const note = createMemo(() => {
     const entry = selected();
-    return entry === undefined ? null : billingMinimumSentence(entry);
+    if (entry === undefined) {
+      return null;
+    }
+    const floor = billingMinimumSentence(entry);
+    return floor === null ? priceLabel(entry, props.spot) : floor;
   });
 
   /**
@@ -457,8 +452,8 @@ export default function MachineSlider(props: MachineSliderProps) {
             {(automatic) => (
               <div class={styles.auto}>
                 <p class={styles.autoName}>{AUTO_NAME}</p>
-                <p class={styles.autoPick}>{detentLabel(automatic().entry, props.spot)}</p>
-                <p class={styles.note}>{rule()}</p>
+                <p class={styles.autoPick}>{detentLabel(automatic().entry)}</p>
+                <p class={styles.note}>{priceLabel(automatic().entry, props.spot)}</p>
                 <Show when={spotOffered() && props.onSpot}>
                   {(onSpot) => (
                     <label class={styles.toggleRow}>
@@ -467,7 +462,7 @@ export default function MachineSlider(props: MachineSliderProps) {
                         checked={props.spot}
                         onChange={(next) => onSpot()(next)}
                       />
-                      Spot capacity — cheaper, and flyco handles eviction
+                      Spot
                     </label>
                   )}
                 </Show>
@@ -537,7 +532,7 @@ export default function MachineSlider(props: MachineSliderProps) {
                       checked={props.spot}
                       onChange={(next) => onSpot()(next)}
                     />
-                    Spot capacity — cheaper, and flyco handles eviction
+                    Spot
                   </label>
                 )}
               </Show>

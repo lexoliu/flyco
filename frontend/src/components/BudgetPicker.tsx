@@ -4,10 +4,10 @@
  * Two places set a budget and they are the same question asked twice: the
  * composer, before a session exists, and the session header, where raising
  * it is what releases a session paused on an exhausted one (docs/ux.md
- * §9.1). So the slider, the amount, and the sentence explaining what the
- * money buys are written once here, and each caller supplies only what
- * differs — the control that opens the panel, and, where the change costs a
- * round trip, the action that commits it.
+ * §9.1). So the heading that names what the money buys, the slider and the
+ * amount are written once here, and each caller supplies only what differs
+ * — the control that opens the panel, and, where the change costs a round
+ * trip, the action that commits it.
  *
  * Controlled, deliberately: the amount lives with the caller, because the
  * trigger renders it (the composer's chip reads `$10`, the header's ring
@@ -15,7 +15,8 @@
  * a number the slider had already moved off.
  */
 import type { JSX } from "solid-js";
-import { Show, createSignal } from "solid-js";
+import { Show, createSignal, onCleanup } from "solid-js";
+import { Server } from "lucide-solid";
 import Popover, { type TriggerAttrs } from "./Popover";
 import styles from "./BudgetPicker.module.css";
 
@@ -56,6 +57,10 @@ export default function BudgetPicker(props: BudgetPickerProps) {
     <Popover label={props.label ?? "Budget"} align={props.align} trigger={props.trigger}>
       {(close) => (
         <div class={styles.popover}>
+          <p class={styles.heading}>
+            <Server size={13} aria-hidden="true" />
+            Compute budget
+          </p>
           <div class={styles.sliderRow}>
             <span class={styles.amount}>${props.dollars}</span>
             <span class={styles.note}>
@@ -72,9 +77,6 @@ export default function BudgetPicker(props: BudgetPickerProps) {
             aria-label="Session budget in dollars"
             onInput={(event) => props.onChange(Number(event.currentTarget.value))}
           />
-          <p class={styles.note}>
-            Covers the machine and its disk. Model tokens are billed by your Claude or Codex plan.
-          </p>
           <Show when={props.action}>{(action) => action()(close)}</Show>
         </div>
       )}
@@ -145,16 +147,22 @@ export function BudgetRaise(props: BudgetRaiseProps) {
       min={floor()}
       max={Math.max(MAX_BUDGET, amount(), floor())}
       trigger={props.trigger}
-      action={(close) => (
-        <button
-          type="button"
-          class={styles.commit}
-          disabled={props.saving}
-          onClick={() => commit(close)}
-        >
-          {props.saving ? "Saving…" : `Set budget to $${amount()}`}
-        </button>
-      )}
+      action={(close) => {
+        // A drag the user walked away from is not a decision: the panel's
+        // own unmount drops the draft, so reopening asks the session again
+        // rather than offering back a number nobody committed.
+        onCleanup(() => setDraft(undefined));
+        return (
+          <button
+            type="button"
+            class={styles.commit}
+            disabled={props.saving}
+            onClick={() => commit(close)}
+          >
+            {props.saving ? "Saving…" : `Set budget to $${amount()}`}
+          </button>
+        );
+      }}
     />
   );
 }

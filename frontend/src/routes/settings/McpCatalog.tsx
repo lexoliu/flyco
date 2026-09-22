@@ -236,10 +236,6 @@ function PickPage(props: {
           Back to Tools
         </A>
         <h2>Add an MCP server</h2>
-        <p class={styles.lede}>
-          The official MCP Registry, searched by name. Pick a server and flyco registers it for
-          every session; where it needs a key or a path, you are asked for it first.
-        </p>
       </header>
 
       <SearchField

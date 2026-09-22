@@ -367,9 +367,29 @@ export interface SessionNotice {
   body: string;
   /** How it is coloured, from the status it describes. */
   tone: StatusTone;
+  /** Which mark stands beside it. */
+  icon: NoticeIcon;
   /** The one thing to do about it, where there is one. */
   action?: SessionNoticeAction;
 }
+
+/**
+ * The mark a notice carries, as a name its page resolves to a glyph.
+ *
+ * A notice is a card of two sentences over the composer, and the eye
+ * needs something to land on before the words — Codex's own out-of-usage
+ * card is a gauge and a sentence. The name lives here, with the sentence
+ * it belongs to, and the page owns the icon set: this module is arithmetic
+ * over a status, not a place components are imported.
+ */
+export type NoticeIcon =
+  | "stopped"
+  | "paused"
+  | "archived"
+  | "waiting"
+  | "budget"
+  | "offline"
+  | "moving";
 
 /** What a resumable session's button says. */
 const RESUME: SessionNoticeAction = { kind: "resume", label: "Resume" };
@@ -448,17 +468,23 @@ function sentence(text: string): string {
 
 export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNotice | null {
   const title = view.detail === undefined ? view.label : `${view.label} · ${view.detail}`;
-  const notice = (body: string, action?: SessionNoticeAction): SessionNotice => ({
+  const notice = (
+    icon: NoticeIcon,
+    body: string,
+    action?: SessionNoticeAction,
+  ): SessionNotice => ({
     title,
     body,
     tone: view.tone,
+    icon,
     ...(action === undefined ? {} : { action }),
   });
 
   switch (view.status) {
     case "failed":
       return notice(
-        `${sentence(facts.failure ?? "The session stopped and said nothing about why.")} Resuming builds the machine again and reopens the same conversation.`,
+        "stopped",
+        sentence(facts.failure ?? "The session stopped and said nothing about why."),
         RESUME,
       );
     case "interrupted":
@@ -469,34 +495,37 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
       switch (facts.interruptedReason) {
         case "suspended":
           return notice(
-            "Flyco stopped the machine after the session sat idle; the disk is kept. Send a message and it starts again on its own — or resume it yourself.",
+            "paused",
+            "The machine was stopped after the session sat idle. Its disk is kept.",
             RESUME,
           );
         case "machine_lost":
           return notice(
-            "The provider no longer has this machine. Resuming builds a new one and reopens the conversation where it stopped.",
+            "stopped",
+            "The provider no longer has this machine. Resuming builds a new one.",
             RESUME,
           );
         case "spot_reclaimed":
           return notice(
-            "The provider reclaimed the machine; flyco is already starting it again on its own disk, with the conversation where it stopped.",
+            "moving",
+            "The provider reclaimed the machine; flyco is starting it again on its own disk.",
             RESUME,
           );
         default:
           return notice(
-            "The machine is gone and the session is waiting. Resuming puts it back on its own disk, with the conversation where it stopped.",
+            "stopped",
+            "The machine is gone. Resuming puts the session back on its own disk.",
             RESUME,
           );
       }
     case "migrating":
       // The one stopped state with nothing to offer and nothing to worry
       // about: flyco is already doing the thing a `Resume` would ask for.
-      return notice(
-        "Flyco is putting the session back on its own disk. Nothing is needed from you; the conversation continues where it stopped.",
-      );
+      return notice("moving", "Flyco is putting the session back on its own disk.");
     case "archived":
       return notice(
-        "This session is read-only and its machine has been released. Resuming builds a machine again and reopens the same conversation.",
+        "archived",
+        "Read-only: the machine was released. Resuming builds one again.",
         RESUME,
       );
     case "paused":
@@ -505,6 +534,7 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
       // the notice carries that control rather than sending the user to
       // look for it in the header.
       return notice(
+        "budget",
         facts.budgetLimit === undefined
           ? "This session's budget is spent. Raise it to continue."
           : `The ${formatUsd(facts.budgetLimit)} budget is spent. Raise it to continue.`,
@@ -519,9 +549,10 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
       // not the window, and such a notice says the part it knows.
       return pause === null || pause === undefined
         ? notice(
+            "waiting",
             "A usage limit on this session's plan is spent. Flyco continues the session by itself when the window resets.",
           )
-        : notice(usageLimitBody(pause, facts.now));
+        : notice("waiting", usageLimitBody(pause, facts.now));
     }
     case "disconnected":
       // Nothing to offer: the daemon dials back on its own within a couple
@@ -529,7 +560,8 @@ export function sessionNotice(view: StatusView, facts: NoticeFacts): SessionNoti
       // page would otherwise look like an agent that stopped answering,
       // and a message typed into it waits rather than being lost.
       return notice(
-        "The machine has dropped off the network. It reconnects on its own within a minute; anything you send waits for it.",
+        "offline",
+        "The machine dropped off the network. Anything you send waits for it.",
       );
     default:
       return null;

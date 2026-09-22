@@ -156,6 +156,26 @@ describe("ComputeCard", () => {
     expect(queryByText(/meters no spend/)).not.toBeInTheDocument();
   });
 
+  it("states what the provider gives away each month, where it gives any", async () => {
+    // A codespace's included core-hours are why a new user pays nothing at
+    // all for weeks; a page about what compute costs has to say so.
+    answerMachineWith(() =>
+      new Response(
+        JSON.stringify({
+          ...DEFAULT,
+          entry: {
+            ...DEFAULT.entry,
+            free_grant: { vcpu_seconds_per_month: 432_000, gib_seconds_per_month: 0 },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    );
+    const { findByText } = mount(AWS, undefined);
+
+    expect(await findByText("120 vCPU-hours")).toBeInTheDocument();
+  });
+
   it("reads a zero row the same way as no row", async () => {
     answerMachineWith(machineResponse);
     const { findByText, queryByText } = mount(AWS, UNBILLED);

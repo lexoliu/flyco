@@ -17,6 +17,23 @@
   align-items: flex-start;
 }
 
+/* The mark, on the first line's centre rather than the row's. */
+.optionIcon {
+  flex: none;
+  margin-top: 2px;
+  color: var(--color-text-muted);
+}
+
+/*
+ * The one mode that stops nothing, in the colour every other warning on
+ * the page uses: a row that gives an agent the whole machine should not
+ * read like the four above it.
+ */
+.optionOpen .optionName,
+.optionOpen .optionIcon {
+  color: var(--color-warning);
+}
+
 .optionText {
   display: flex;
   flex-direction: column;

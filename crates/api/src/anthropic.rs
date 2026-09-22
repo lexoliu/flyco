@@ -13,10 +13,14 @@
 //! production and a table of recorded exchanges under test. That is the only
 //! way to pin what actually goes on the wire — the exact URL, the exact JSON
 //! body — and both grants below are the same endpoint, so there is one
-//! request type and one method rather than two of each.
+//! request type and one method rather than two of each. The plan read
+//! below goes out the same way, and to a different host: the grant is
+//! redeemed at `console.anthropic.com` and the plan is read from
+//! `api.anthropic.com`.
 
 use core::future::Future;
 
+use flyco_core::UsageWindow;
 use flyco_provider::http::{HttpRequest, HttpResponse, Method};
 use flyco_provider::{HttpError, HttpTransport, LiveTransport};
 use serde::{Deserialize, Serialize};
@@ -27,6 +31,23 @@ const AUTHORIZE_URL: &str = "https://claude.ai/oauth/authorize";
 
 /// Where an authorization code and a refresh token are both redeemed.
 const TOKEN_URL: &str = "https://console.anthropic.com/v1/oauth/token";
+
+/// Where a subscription's rolling plan windows are read.
+///
+/// The endpoint the Claude CLI reads its own `/usage` screen from, and it
+/// answers for whoever the bearer token belongs to — there is no account
+/// parameter, which is why the token has to be the account's own.
+const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+
+/// The beta gate an OAuth-authenticated call to `api.anthropic.com` needs.
+const OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// The API version every call to `api.anthropic.com` states.
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+/// Minutes in the two window lengths Anthropic's plan is measured in.
+const FIVE_HOUR_MINUTES: u32 = 5 * 60;
+const SEVEN_DAY_MINUTES: u32 = 7 * 24 * 60;
 
 /// The redirect URI the grant is bound to.
 ///
@@ -225,6 +246,21 @@ pub trait ClaudeOauth: Send + Sync + Clone + 'static {
         &self,
         request: TokenRequest<'_>,
     ) -> impl Future<Output = Result<TokenSet, AnthropicError>> + Send;
+
+    /// Reads the plan the account's subscription is metered against.
+    ///
+    /// Live on every call and never cached: a window moves whether or not
+    /// flyco is looking, and the reading that is a second old is the only
+    /// one worth drawing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AnthropicError`] if the read fails or Anthropic refuses
+    /// the token.
+    fn usage(
+        &self,
+        access_token: &str,
+    ) -> impl Future<Output = Result<PlanUsageDocument, AnthropicError>> + Send;
 }
 
 /// The production client, speaking HTTP through zenwave — hyper natively,
@@ -273,9 +309,148 @@ pub async fn exchange_over<T: HttpTransport>(
     token_set(&response)
 }
 
+/// One rolling plan window as `/api/oauth/usage` states it.
+///
+/// Both members are nullable on the wire and mean different things when
+/// they are: a `utilization` of `null` is a bucket this plan does not
+/// have, and a `resets_at` of `null` is a window with no stated turnover.
+#[derive(Debug, Clone, Deserialize)]
+struct UsageReading {
+    /// How much of the window is spent, 0–100.
+    utilization: Option<f64>,
+    /// When the window turns over, ISO 8601.
+    resets_at: Option<String>,
+}
+
+impl UsageReading {
+    /// This reading as the window flyco states limits in, or `None` when
+    /// the plan does not have it or it has already turned over.
+    ///
+    /// A window whose reset is in the past is not a window: the vendor is
+    /// describing an interval that has ended, and drawing it would say a
+    /// plan is spent when the thing it was spent against is over. That is
+    /// the reading `usage_json` used to serve for days on end.
+    fn window(&self, minutes: Option<u32>, scope: Option<&str>, now: u64) -> Option<UsageWindow> {
+        let utilization = self.utilization?;
+        let resets_at_unix = self.resets_at.as_deref().and_then(parse_instant);
+        if resets_at_unix.is_some_and(|at| at <= i64::try_from(now).unwrap_or(i64::MAX)) {
+            return None;
+        }
+        Some(UsageWindow::new(
+            minutes,
+            scope,
+            percent(utilization),
+            resets_at_unix,
+        ))
+    }
+}
+
+/// A vendor percentage as the whole number flyco draws.
+///
+/// Rounded *down* below a hundred, the way the Claude CLI prints it, so
+/// that a ring reads full only when the vendor said the window is full —
+/// and so that flyco and the CLI never disagree by a point.
+fn percent(utilization: f64) -> u8 {
+    if utilization >= 100.0 {
+        return 100;
+    }
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to the range a percentage has before the cast"
+    )]
+    let whole = utilization.clamp(0.0, 100.0).floor() as u8;
+    whole
+}
+
+/// An ISO 8601 instant as a Unix second, or `None` if it will not parse.
+fn parse_instant(text: &str) -> Option<i64> {
+    time::OffsetDateTime::parse(text, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .map(time::OffsetDateTime::unix_timestamp)
+}
+
+/// The plan document `/api/oauth/usage` answers with.
+///
+/// Every member is optional because which buckets exist is the plan's
+/// business: a Pro subscription has no per-model weekly window, and a plan
+/// Anthropic introduces tomorrow is simply a key flyco does not read yet.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PlanUsageDocument {
+    /// The session window every plan has.
+    five_hour: Option<UsageReading>,
+    /// The week across every model.
+    seven_day: Option<UsageReading>,
+    /// The week's Opus bucket, on the plans that meter Opus separately.
+    seven_day_opus: Option<UsageReading>,
+    /// The week's Sonnet bucket, on the plans that meter Sonnet separately.
+    seven_day_sonnet: Option<UsageReading>,
+}
+
+impl PlanUsageDocument {
+    /// Every window the plan currently has, in reading order.
+    ///
+    /// `now` is a parameter rather than the clock so that one answer is
+    /// judged against one instant — and so the expiry rule above is
+    /// testable without waiting for a window to turn over.
+    #[must_use]
+    pub fn windows(&self, now: u64) -> Vec<UsageWindow> {
+        [
+            (&self.five_hour, Some(FIVE_HOUR_MINUTES), None),
+            (&self.seven_day, Some(SEVEN_DAY_MINUTES), None),
+            (&self.seven_day_opus, Some(SEVEN_DAY_MINUTES), Some("Opus")),
+            (
+                &self.seven_day_sonnet,
+                Some(SEVEN_DAY_MINUTES),
+                Some("Sonnet"),
+            ),
+        ]
+        .into_iter()
+        .filter_map(|(reading, minutes, scope)| reading.as_ref()?.window(minutes, scope, now))
+        .collect()
+    }
+}
+
+/// Describes the plan read as an [`HttpRequest`].
+///
+/// The three headers are the ones `api.anthropic.com` requires of an
+/// OAuth-authenticated caller; without the beta gate it answers `401` for
+/// a token that is perfectly good.
+#[must_use]
+pub fn usage_request(access_token: &str) -> HttpRequest {
+    HttpRequest::new(Method::Get, USAGE_URL)
+        .header("accept", "application/json")
+        .header("authorization", format!("Bearer {access_token}"))
+        .header("anthropic-beta", OAUTH_BETA)
+        .header("anthropic-version", ANTHROPIC_VERSION)
+}
+
+/// Reads the plan over any transport.
+///
+/// # Errors
+///
+/// Returns [`AnthropicError`] if the request cannot be sent, if Anthropic
+/// refuses the token, or if the document does not parse.
+pub async fn usage_over<T: HttpTransport>(
+    transport: &T,
+    access_token: &str,
+) -> Result<PlanUsageDocument, AnthropicError> {
+    let response = transport.send(usage_request(access_token)).await?;
+    if !response.is_success() {
+        return Err(AnthropicError::Status(response.status));
+    }
+    response
+        .json::<PlanUsageDocument>()
+        .map_err(|error| AnthropicError::Transport(error.to_string()))
+}
+
 impl ClaudeOauth for ZenwaveClaude {
     async fn exchange(&self, request: TokenRequest<'_>) -> Result<TokenSet, AnthropicError> {
         exchange_over(&self.transport, request).await
+    }
+
+    async fn usage(&self, access_token: &str) -> Result<PlanUsageDocument, AnthropicError> {
+        usage_over(&self.transport, access_token).await
     }
 }
 
@@ -308,6 +483,14 @@ impl ClaudeOauth for ClaudeClient {
             Self::Fake(client) => client.exchange(request).await,
         }
     }
+
+    async fn usage(&self, access_token: &str) -> Result<PlanUsageDocument, AnthropicError> {
+        match self {
+            Self::Live(client) => client.usage(access_token).await,
+            #[cfg(test)]
+            Self::Fake(client) => client.usage(access_token).await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -316,8 +499,8 @@ mod tests {
     use flyco_provider::testing::RecordedTransport;
 
     use super::{
-        AnthropicError, REDIRECT_URI, SCOPE, TokenRequest, authorize_url, exchange_over,
-        split_pasted_code,
+        AnthropicError, PlanUsageDocument, REDIRECT_URI, SCOPE, TokenRequest, authorize_url,
+        exchange_over, split_pasted_code, usage_over,
     };
     use crate::crypto::pkce;
 
@@ -455,5 +638,112 @@ mod tests {
         .expect_err("an outage page");
 
         assert!(matches!(error, AnthropicError::Status(503)));
+    }
+    /// A plan document as `/api/oauth/usage` answers one.
+    ///
+    /// `resets_at` is stated relative to the reading below, because what
+    /// the endpoint returns is always a window that is still open.
+    fn plan_body(now: u64) -> String {
+        serde_json::json!({
+            "five_hour": { "utilization": 43.7, "resets_at": instant(now + 3_600) },
+            "seven_day": { "utilization": 78.2, "resets_at": instant(now + 86_400) },
+            "seven_day_opus": { "utilization": 100.0, "resets_at": instant(now + 86_400) },
+            "seven_day_sonnet": { "utilization": null, "resets_at": null },
+        })
+        .to_string()
+    }
+
+    /// An instant as Anthropic states one.
+    fn instant(unix: u64) -> String {
+        time::OffsetDateTime::from_unix_timestamp(i64::try_from(unix).expect("a plausible clock"))
+            .expect("a plausible clock")
+            .format(&time::format_description::well_known::Rfc3339)
+            .expect("RFC 3339 formats any instant")
+    }
+
+    #[skyzen::test]
+    async fn a_plan_read_sends_the_bearer_token_and_the_beta_gate() {
+        let now = 1_800_000_000;
+        let transport = RecordedTransport::new(vec![HttpResponse::new(200, plan_body(now))]);
+        let plan = usage_over(&transport, "sk-ant-oat01-the-account")
+            .await
+            .expect("read the plan");
+
+        let request = transport.request(0);
+        assert_eq!(request.method.as_str(), "GET");
+        assert_eq!(request.url, "https://api.anthropic.com/api/oauth/usage");
+        let header = |name: &str| {
+            request
+                .headers
+                .iter()
+                .find_map(|(key, value)| key.eq_ignore_ascii_case(name).then_some(value.as_str()))
+        };
+        assert_eq!(
+            header("authorization"),
+            Some("Bearer sk-ant-oat01-the-account")
+        );
+        assert_eq!(header("anthropic-beta"), Some("oauth-2025-04-20"));
+        assert_eq!(header("anthropic-version"), Some("2023-06-01"));
+
+        // Floored, the way the CLI prints it, so a window reads full only
+        // when the vendor said it is full. A bucket this plan does not
+        // meter states no utilization and is no window at all.
+        assert_eq!(
+            plan.windows(now)
+                .iter()
+                .map(|window| (window.label.clone(), window.used_percent))
+                .collect::<Vec<_>>(),
+            [
+                ("5-hour".to_owned(), 43),
+                ("Weekly".to_owned(), 78),
+                ("Weekly (Opus)".to_owned(), 100),
+            ]
+        );
+    }
+
+    #[skyzen::test]
+    async fn a_window_whose_reset_has_passed_is_not_a_window() {
+        // The whole of #381: a reading whose turnover is behind us
+        // describes an interval that has ended, and drawing it is how a
+        // plan at 43% rendered as a spent week that "resets now".
+        let now = 1_800_000_000;
+        let transport = RecordedTransport::new(vec![HttpResponse::new(200, plan_body(now))]);
+        let plan = usage_over(&transport, "sk-ant-oat01-the-account")
+            .await
+            .expect("read the plan");
+
+        assert_eq!(
+            plan.windows(now + 86_401),
+            [],
+            "every window has turned over"
+        );
+        assert_eq!(
+            plan.windows(now + 3_601)
+                .iter()
+                .map(|window| window.label.clone())
+                .collect::<Vec<_>>(),
+            ["Weekly".to_owned(), "Weekly (Opus)".to_owned()],
+            "the five-hour window is over; the week is not"
+        );
+    }
+
+    #[skyzen::test]
+    async fn a_refused_plan_read_is_its_status() {
+        let transport = RecordedTransport::new(vec![HttpResponse::new(401, "{}")]);
+        let error = usage_over(&transport, "sk-ant-oat01-revoked")
+            .await
+            .expect_err("a refused token");
+        assert!(matches!(error, AnthropicError::Status(401)));
+    }
+
+    #[test]
+    fn a_plan_with_no_windows_at_all_reads_back_empty() {
+        // Every member is optional: an account on a plan Anthropic meters
+        // differently answers with keys this control plane does not read,
+        // and that is a plan with nothing to draw rather than a failure.
+        let plan: PlanUsageDocument =
+            serde_json::from_str("{\"seven_day_oauth_apps\": {\"utilization\": 4.0}}")
+                .expect("an unknown bucket is still a plan document");
+        assert_eq!(plan.windows(1_800_000_000), []);
     }
 }

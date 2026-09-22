@@ -104,3 +104,26 @@ Claude, Codex, any of them — that uses it during a task:
    in `wrangler tail` — stops the client first (stop the session, destroy
    the machine, kill the process) and diagnoses second. Workers Logs keep
    the evidence; a loop left running to "observe it" spends the day.
+
+## Interface invariant: the design teaches, the copy does not
+
+A good screen is understood at a glance. Explanatory sentences under a
+control are the design failing and then apologising, so they are not
+written:
+
+- No sentence that explains what a control does when the control can say
+  it itself. `Spot capacity — cheaper, and flyco handles eviction`,
+  `A container your provider gives away this month, which flyco spends
+  before it spends money.`, `Choosing a machine yourself is remembered
+  with the session, and the agent is told you picked it.` are all banned,
+  in that wording and in any other.
+- No pile of facts joined by `·` standing in for a layout. Each fact gets
+  its own place in the row or the line, in the order it is read.
+- A collapsed control shows only what the choice turns on — for a machine
+  that is cores and memory, not price. Secondary facts appear when it is
+  open, laid out, not concatenated.
+- No label that repeats the heading above it, and no hint that repeats the
+  label beside it.
+
+The test is the first-time user: if they could not work the screen without
+the sentence, fix the screen.

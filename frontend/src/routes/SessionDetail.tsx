@@ -24,8 +24,20 @@ import {
   onCleanup,
 } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
+import { Dynamic } from "solid-js/web";
+import { cx } from "../lib/cx";
 import { createQuery } from "../lib/query";
-import { AlertTriangle, Server, Wallet } from "lucide-solid";
+import {
+  AlertTriangle,
+  Archive,
+  CircleSlash,
+  Clock,
+  PauseCircle,
+  RefreshCw,
+  Server,
+  Wallet,
+  WifiOff,
+} from "lucide-solid";
 import { BudgetRaise } from "../components/BudgetPicker";
 import GoalChip from "../components/GoalChip";
 import ConfirmDialog from "../components/ConfirmDialog";
@@ -47,6 +59,7 @@ import {
   decideApproval,
   getSession,
   getSessionMachine,
+  keepSessionAwake,
   resumeSession,
   startSessionMachine,
   stopSessionMachine,
@@ -54,7 +67,6 @@ import {
   type ModelChoice,
   type ModelOption,
   type PermissionMode,
-  type MachineView,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
 import type { ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
@@ -63,16 +75,17 @@ import type { HarnessCommand } from "../api/wire";
 import { formatTimeOfDay } from "../lib/dates";
 import { reposLabel } from "../lib/repos";
 import { PROVIDER_LABEL } from "../lib/providers";
-import { machineChip, shortMachineType } from "../lib/machines";
+import { machineChip } from "../lib/machines";
 import { modesFor } from "../lib/modes";
 import { orderedWindows } from "../lib/planUsage";
-import { dollarsToUsdMicros, formatUsd, usdMicrosToDollars } from "../lib/money";
+import { dollarsToUsdMicros, usdMicrosToDollars } from "../lib/money";
 import { shellCommandIn } from "../lib/shell";
 import {
   REFUSING,
   deriveStatus,
   liveSignalsFrom,
   sessionNotice,
+  type NoticeIcon,
   type StatusView,
 } from "../lib/status";
 import {
@@ -91,17 +104,38 @@ import styles from "./SessionDetail.module.css";
  */
 const TICK_MS = 1000;
 
+/**
+ * The session page, as one instance per session.
+ *
+ * The router keeps a route's component mounted across a change of its
+ * parameters, and almost everything on this page is state about one
+ * session: the relay's own connection and its events, the transcript
+ * store folded from them, the drawer's tab, the composer's draft. Bound
+ * once at setup, they went on describing the session that was open when
+ * the page first mounted while the header — which reads a query keyed on
+ * the parameter — described the one that was clicked. Keying the instance
+ * on the id is the reset: a new session is a new page.
+ */
 export default function SessionDetail() {
   const params = useParams<{ id: string }>();
+  return (
+    <Show when={params.id} keyed>
+      {(id) => <SessionView id={id} />}
+    </Show>
+  );
+}
+
+/** One session's page, for the id it was mounted with. */
+function SessionView(props: { id: string }) {
   const navigate = useNavigate();
   const readiness = useReadiness();
   const [session, { refetch: refetchSession, mutate: mutateSession }] = createQuery(
-    () => params.id,
+    () => props.id,
     getSession,
   );
-  const [machine, { refetch: refetchMachine }] = createQuery(() => params.id, getSessionMachine);
+  const [machine, { refetch: refetchMachine }] = createQuery(() => props.id, getSessionMachine);
 
-  const relay = createSessionRelay(params.id);
+  const relay = createSessionRelay(props.id);
   onCleanup(() => relay.dispose());
 
   const [now, setNow] = createSignal(Date.now());
@@ -400,24 +434,17 @@ export default function SessionDetail() {
   /**
    * How much of the plan behind this session's harness account is spent.
    *
-   * The newest snapshot the agent reported over the relay wins; until it
-   * has reported one, the linked account's — which is what the last session
-   * on it filed — stands in, so the rings are right on a page opened before
-   * the machine says anything. Empty until *something* has asked the
-   * vendor, which is the honest state: nothing is drawn.
+   * Read from the vendor by the control plane while the account list was
+   * answered, so the rings are right on a page opened before the machine
+   * says anything — and right *after* one has been idle for a week, which
+   * a snapshot filed by the last session was not (#381). Empty where the
+   * credential has no plan or the vendor would not answer: nothing true to
+   * draw is nothing drawn.
    */
   const planUsage = createMemo<UsageWindow[]>(() => {
-    const events = relay.events();
-    for (let i = events.length - 1; i >= 0; i -= 1) {
-      const entry = events[i];
-      if (entry !== undefined && entry.event.type === "plan_usage") {
-        return orderedWindows(entry.event.windows);
-      }
-    }
     const harness = session()?.harness;
-    return orderedWindows(
-      readiness.harness().find((account) => account.harness === harness)?.usage ?? [],
-    );
+    const usage = readiness.harness().find((account) => account.harness === harness)?.usage;
+    return orderedWindows(usage?.state === "windows" ? usage.windows : []);
   });
 
   /**
@@ -492,9 +519,6 @@ export default function SessionDetail() {
    */
   const deferredNote = createMemo(() => {
     const view = status();
-    if (view?.status === "interrupted") {
-      return "Sent when the machine is back";
-    }
     if (view?.status !== "usage_limit") {
       return undefined;
     }
@@ -517,6 +541,19 @@ export default function SessionDetail() {
   });
 
   /**
+   * Whether the notice covers the composer instead of standing over it.
+   *
+   * A session whose machine is gone has one thing to do first, and the
+   * notice carries it. The box stayed live beside the notice and took
+   * typing that could go nowhere until something else happened, so where
+   * there is a way out the notice lies over the box and the box is inert
+   * until it is taken. States with nothing to do — a machine coming back
+   * on its own, a plan window resetting — leave the box open, because a
+   * message typed into those is held and sent.
+   */
+  const covered = createMemo(() => !refused() && notice()?.action?.kind === "resume");
+
+  /**
    * Whether a daemon is holding the room — what a `!` command, a
    * `/compact`, a terminal keystroke or a context breakdown needs.
    *
@@ -532,31 +569,6 @@ export default function SessionDetail() {
   );
 
   const [error, setError] = createSignal<unknown>(null);
-  /**
-   * The message waiting on the user's word to start the machine.
-   *
-   * Set when a prompt is sent to a session whose machine a message would
-   * wake; cleared by the answer either way.
-   */
-  const [pendingWake, setPendingWake] = createSignal<{
-    text: string;
-    answer: (start: boolean) => void;
-  } | null>(null);
-  /**
-   * Whether a message sent now would start a machine, and which way.
-   *
-   * `suspended` starts the machine the session already has; `machine_lost`
-   * builds a new one. A reclaimed machine is already being restarted, and
-   * every other state either delivers the message at once or refuses the
-   * composer altogether, so neither needs asking.
-   */
-  const wakeOnSend = createMemo((): "suspended" | "machine_lost" | null => {
-    if (status()?.status !== "interrupted") {
-      return null;
-    }
-    const reason = session()?.interrupted_reason;
-    return reason === "suspended" || reason === "machine_lost" ? reason : null;
-  });
   const [deciding, setDeciding] = createSignal(false);
   const [resuming, setResuming] = createSignal(false);
   const [archiving, setArchiving] = createSignal(false);
@@ -637,14 +649,6 @@ export default function SessionDetail() {
   function onSend(text: string): boolean | Promise<boolean> {
     const command = shellCommandIn(text);
     if (command === null) {
-      // A message to a session whose machine is off is also what starts
-      // the machine again (docs/ux.md §9.9) — a minute of waiting and an
-      // hourly price the user did not just choose. That is asked, not
-      // assumed: the draft stays in the field until the question is
-      // answered, and "Not now" keeps it there.
-      if (wakeOnSend() !== null) {
-        return new Promise((answer) => setPendingWake({ text, answer }));
-      }
       void attempt(() => relay.send({ type: "user_message", text }));
       return true;
     }
@@ -655,22 +659,6 @@ export default function SessionDetail() {
     }
     void attempt(() => relay.send({ type: "shell_command", command }));
     return true;
-  }
-
-  /**
-   * Answers the start question: `true` sends the held message, which is
-   * what starts the machine; `false` leaves the draft in the field.
-   */
-  function answerWake(start: boolean): void {
-    const ask = pendingWake();
-    setPendingWake(null);
-    if (ask === null) {
-      return;
-    }
-    if (start) {
-      void attempt(() => relay.send({ type: "user_message", text: ask.text }));
-    }
-    ask.answer(start);
   }
 
   function onStop(): void {
@@ -724,7 +712,7 @@ export default function SessionDetail() {
     setError(null);
     setAddingRepo(true);
     try {
-      mutateSession(await addSessionRepo(params.id, selection));
+      mutateSession(await addSessionRepo(props.id, selection));
     } catch (failure) {
       setError(failure);
     } finally {
@@ -741,7 +729,7 @@ export default function SessionDetail() {
       mutateSession({ ...previous, title });
     }
     try {
-      const updated = await updateSession(params.id, { title });
+      const updated = await updateSession(props.id, { title });
       mutateSession(updated);
     } catch (failure) {
       setError(failure);
@@ -765,7 +753,7 @@ export default function SessionDetail() {
     setSettingBudget(true);
     try {
       mutateSession(
-        await updateSession(params.id, {
+        await updateSession(props.id, {
           budgetLimit: dollarsToUsdMicros(dollars),
         }),
       );
@@ -791,7 +779,7 @@ export default function SessionDetail() {
     setError(null);
     setSettingModel(true);
     try {
-      mutateSession(await updateSession(params.id, { model: choice }));
+      mutateSession(await updateSession(props.id, { model: choice }));
     } catch (failure) {
       setError(failure);
     } finally {
@@ -813,7 +801,7 @@ export default function SessionDetail() {
     setError(null);
     setSettingMode(true);
     try {
-      mutateSession(await updateSession(params.id, { permissionMode: mode }));
+      mutateSession(await updateSession(props.id, { permissionMode: mode }));
     } catch (failure) {
       setError(failure);
     } finally {
@@ -828,7 +816,7 @@ export default function SessionDetail() {
     setError(null);
     setArchiving(true);
     try {
-      await archiveSession(params.id, { discardUncommitted });
+      await archiveSession(props.id, { discardUncommitted });
       setPendingDirtySummary(null);
       await refetchSession();
     } catch (failure) {
@@ -861,7 +849,7 @@ export default function SessionDetail() {
     setError(null);
     setResuming(true);
     try {
-      mutateSession(await resumeSession(params.id));
+      mutateSession(await resumeSession(props.id));
       await refetchMachine();
       return true;
     } catch (failure) {
@@ -884,10 +872,27 @@ export default function SessionDetail() {
     }
   }
 
+  /**
+   * Holds the machine awake, or gives it back to the idle sweep.
+   *
+   * The answer is the whole session, so the menu's row reads the hold the
+   * control plane actually recorded rather than the one the click asked
+   * for — the two differ by however long the round trip took, and the row
+   * counts down from the answer.
+   */
+  async function onKeepAwake(minutes: number | null): Promise<void> {
+    setError(null);
+    try {
+      mutateSession(await keepSessionAwake(props.id, minutes));
+    } catch (failure) {
+      setError(failure);
+    }
+  }
+
   async function onMachine(action: "start" | "stop"): Promise<void> {
     setError(null);
     try {
-      await (action === "start" ? startSessionMachine(params.id) : stopSessionMachine(params.id));
+      await (action === "start" ? startSessionMachine(props.id) : stopSessionMachine(props.id));
       await refetchMachine();
     } catch (failure) {
       setError(failure);
@@ -938,7 +943,7 @@ export default function SessionDetail() {
     <section class={styles.page}>
       <SessionHeader
         session={session()}
-        sessionId={params.id}
+        sessionId={props.id}
         connection={relay.state()}
         machine={machine()}
         onRename={(title) => void onRename(title)}
@@ -946,6 +951,7 @@ export default function SessionDetail() {
         archiving={archiving()}
         onStartMachine={() => void onMachine("start")}
         onStopMachine={() => void onMachine("stop")}
+        onKeepAwake={(minutes) => void onKeepAwake(minutes)}
         drawerOpen={drawerOpen()}
         onToggleDrawer={() => setDrawerOpen((was) => !was)}
         onOpenPanel={requestPanel}
@@ -970,20 +976,6 @@ export default function SessionDetail() {
         />
       </Show>
       <ProblemNotice error={error()} />
-
-      <Show when={pendingWake() !== null ? wakeOnSend() : null}>
-        {(reason) => (
-          <ConfirmDialog
-            title={reason() === "suspended" ? "Start the machine?" : "Build a new machine?"}
-            body={wakeBody(reason(), machine())}
-            tone="affirm"
-            confirmLabel="Start and send"
-            cancelLabel="Not now"
-            onConfirm={() => answerWake(true)}
-            onCancel={() => answerWake(false)}
-          />
-        )}
-      </Show>
 
       <Show when={pendingDirtySummary()}>
         {(summary) => (
@@ -1012,12 +1004,14 @@ export default function SessionDetail() {
             the page holding everything else up.
           */}
             <Show when={waiting().length > 0}>
-              <p class={styles.approvalBanner}>
-                <AlertTriangle size={14} aria-hidden="true" />
-                {waiting().length === 1
-                  ? "The agent is waiting on your decision."
-                  : `The agent is waiting on ${waiting().length} decisions.`}
-              </p>
+              <div class={styles.approvalDock}>
+                <p class={styles.approvalBanner}>
+                  <AlertTriangle size={14} aria-hidden="true" />
+                  {waiting().length === 1
+                    ? "The agent is waiting on your decision."
+                    : `The agent is waiting on ${waiting().length} decisions.`}
+                </p>
+              </div>
             </Show>
 
             {/*
@@ -1043,12 +1037,16 @@ export default function SessionDetail() {
                       Nothing has happened yet. Send a message to get the agent started.
                     </p>
                   </Match>
+                  {/*
+                    Only the fact the transcript itself holds. Every state
+                    that lands here — paused, interrupted, failed,
+                    archived — has a notice in the composer's place
+                    carrying the label, the reason and the way out, and
+                    repeating `Paused · budget exhausted` here made one
+                    screen say it twice.
+                  */}
                   <Match when={session()}>
-                    <p class={styles.empty}>
-                      {status()?.label}
-                      <Show when={status()?.detail}>{(detail) => <> · {detail()}</>}</Show>. Nothing
-                      ran before it stopped.
-                    </p>
+                    <p class={styles.empty}>Nothing ran before it stopped.</p>
                   </Match>
                 </Switch>
               }
@@ -1118,14 +1116,15 @@ export default function SessionDetail() {
             that will refuse; one that can, and has something to say about
             itself first, says it directly above the box.
           */}
-          <div class={styles.composer}>
+          <div class={cx(styles.composer, covered() && styles.composerCovered)}>
             <Show when={notice()}>
               {(state) => (
                 <section
-                  class={styles.stateNotice}
+                  class={cx(styles.stateNotice, covered() && styles.stateNoticeOver)}
                   data-tone={state().tone}
                   aria-label="Session state"
                 >
+                  <NoticeMark icon={state().icon} />
                   <h2 class={styles.stateTitle}>{state().title}</h2>
                   <p class={styles.stateBody}>{state().body}</p>
                   {/*
@@ -1177,6 +1176,15 @@ export default function SessionDetail() {
               )}
             </Show>
             <Show when={!refused()}>
+              <div
+                class={cx(styles.composerBox, covered() && styles.composerInert)}
+                ref={(el) => {
+                  // `inert` takes the box out of tabbing and hit-testing
+                  // while the notice lies over it; Solid's JSX types do
+                  // not know the attribute yet, so it is set on the node.
+                  createEffect(() => el.toggleAttribute("inert", covered()));
+                }}
+              >
               <SessionComposer
                 turnInFlight={status()?.status === "working"}
                 commands={commands()}
@@ -1216,7 +1224,7 @@ export default function SessionDetail() {
                         >
                           {() => (
                             <MachinePanel
-                              sessionId={params.id}
+                              sessionId={props.id}
                               machine={view()}
                               openResize={machineResizeAt()}
                               onChanged={() => void refetchMachine()}
@@ -1321,21 +1329,19 @@ export default function SessionDetail() {
                         session={sessionTotals()}
                         now={now()}
                         machineUp={machineUp()}
-                        onResume={
-                          notice()?.action?.kind === "resume" ? onResume : undefined
-                        }
                         onBreakdown={requestContextBreakdown}
                       />
                     </Show>
                   </>
                 }
               />
+              </div>
             </Show>
           </div>
         </div>
 
         <SessionDrawer
-          sessionId={params.id}
+          sessionId={props.id}
           relay={relay}
           machineUp={machineUp()}
           repos={session()?.repos ?? []}
@@ -1354,20 +1360,33 @@ export default function SessionDetail() {
 }
 
 /**
- * What starting the machine will cost the user, before their message does it.
+ * The mark beside a state notice, from the name the notice carries.
  *
- * Three facts, in the order they decide: what the machine is, how long the
- * wait is and what it bills, and that the message is not lost — it is what
- * the machine wakes to.
+ * The map is here rather than in `lib/status.ts` because it is the page's
+ * icon set: the notice states what happened, and this states what that
+ * looks like.
  */
-function wakeBody(reason: "suspended" | "machine_lost", machine: MachineView | undefined): string {
-  const name = machine === undefined ? "The machine" : shortMachineType(machine.spec.machine_type);
-  const rate =
-    machine?.hourly === null || machine?.hourly === undefined
-      ? ""
-      : ` and bills ${formatUsd(machine.hourly)}/hr while it runs`;
-  if (reason === "suspended") {
-    return `${name} is stopped and its disk is kept. Starting it takes about a minute${rate}. Your message is sent once it is back.`;
-  }
-  return `The provider no longer has ${machine === undefined ? "this machine" : name}. Sending builds a new one on a fresh disk, which takes a few minutes${rate}, and the conversation continues where it stopped.`;
+function NoticeMark(props: { icon: NoticeIcon }) {
+  const glyph = () => {
+    switch (props.icon) {
+      case "stopped":
+        return AlertTriangle;
+      case "paused":
+        return PauseCircle;
+      case "archived":
+        return Archive;
+      case "waiting":
+        return Clock;
+      case "budget":
+        return Wallet;
+      case "offline":
+        return WifiOff;
+      case "moving":
+        return RefreshCw;
+      default:
+        return CircleSlash;
+    }
+  };
+  return <Dynamic component={glyph()} class={cx(styles.stateIcon)} size={20} aria-hidden="true" />;
 }
+

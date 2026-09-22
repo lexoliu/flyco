@@ -34,6 +34,21 @@ class StubResizeObserver implements ResizeObserver {
 
 vi.stubGlobal("ResizeObserver", StubResizeObserver);
 
+// Nor `<dialog>`'s modal methods, which jsdom declares and does not
+// implement. The top layer, the focus trap and the backdrop are the
+// browser's; what a test needs is for `showModal` to open the element and
+// `close` to shut it, so the dialog is queryable and its open state is
+// real.
+if (typeof HTMLDialogElement !== "undefined" && HTMLDialogElement.prototype.showModal === undefined) {
+  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement): void {
+    this.open = true;
+  };
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement): void {
+    this.open = false;
+    this.dispatchEvent(new Event("close"));
+  };
+}
+
 // Nor window.matchMedia, which ComposerShell reads to decide whether the
 // chips float as an island over the box — never narrow in a test.
 window.matchMedia = (query: string): MediaQueryList =>
@@ -334,7 +349,7 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
           linked_at_unix: 1_787_000_000,
           expires_at_unix: null,
           models: [],
-          usage: [],
+          usage: { state: "unmetered" as const },
         },
         201,
       ),
@@ -359,7 +374,7 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
           linked_at_unix: 1_787_000_000,
           expires_at_unix: 1_787_028_800,
           models: [],
-          usage: [],
+          usage: { state: "unmetered" as const },
         },
         201,
       ),
@@ -384,7 +399,7 @@ function mockFetch(input: string | URL | Request, init?: RequestInit): Promise<R
           linked_at_unix: 1_787_000_000,
           expires_at_unix: null,
           models: [],
-          usage: [],
+          usage: { state: "unmetered" as const },
         },
         201,
       ),

@@ -369,6 +369,7 @@ async fn a_refresh_token_anthropic_will_not_take_fails_loudly(_ctx: TestContext,
     harness_accounts::store(
         &db,
         &test_config(),
+        &test_vendors(),
         user.id,
         "lexo@lexo.cool",
         HarnessKind::ClaudeCode,

@@ -259,17 +259,6 @@ impl ControlApi for RecordingApi {
         core::future::ready(recorded)
     }
 
-    fn report_usage(
-        &self,
-        windows: &[UsageWindow],
-    ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
-        let recorded = self
-            .calls
-            .send(Call::UsageReported(windows.to_vec()))
-            .map_err(|error| ControlApiError::Transport(error.to_string()));
-        core::future::ready(recorded)
-    }
-
     fn report_usage_limit(
         &self,
         window: &UsageWindow,
@@ -1267,38 +1256,6 @@ async fn user_messages_interrupts_and_compaction_reach_the_harness() {
     assert_eq!(
         harness.next_call().await,
         Call::PermissionModeSet(flyco_core::PermissionMode::Plan)
-    );
-
-    harness.archive().await.expect("the run ended cleanly");
-}
-
-#[tokio::test]
-async fn what_is_left_of_the_plan_is_filed_over_rest_rather_than_sent_as_a_frame() {
-    // The snapshot is recorded against the *account*, which lives in D1,
-    // so it leaves the relay by the same door the model list does and the
-    // control plane announces it to the browsers itself.
-    let mut harness = Harness::start(AttachAnswer::Accept).await;
-    harness.handshake().await;
-
-    let windows = vec![
-        UsageWindow::new(Some(300), None, 12, Some(1_789_002_000)),
-        UsageWindow::new(Some(10_080), None, 40, Some(1_789_570_800)),
-    ];
-    harness
-        .emit(SessionOutput::PlanUsage {
-            windows: windows.clone(),
-        })
-        .await;
-    assert_eq!(harness.next_call().await, Call::UsageReported(windows));
-
-    // And nothing was queued for the room: the next frame is the one the
-    // output after it produces.
-    harness
-        .emit(SessionOutput::Event { event: delta("hi") })
-        .await;
-    assert_eq!(
-        harness.room.next_frame().await,
-        DaemonToControl::Harness { event: delta("hi") }
     );
 
     harness.archive().await.expect("the run ended cleanly");
@@ -3037,15 +2994,6 @@ mod remote_store {
         ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
             core::future::ready(Err(ControlApiError::Transport(
                 "the transcript store reports no model lists".to_owned(),
-            )))
-        }
-
-        fn report_usage(
-            &self,
-            _windows: &[UsageWindow],
-        ) -> impl core::future::Future<Output = Result<(), ControlApiError>> + Send {
-            core::future::ready(Err(ControlApiError::Transport(
-                "the transcript store reports no usage snapshots".to_owned(),
             )))
         }
 

@@ -12,7 +12,16 @@
  */
 import { For } from "solid-js";
 import { A } from "@solidjs/router";
-import { ArrowLeft, Blocks, Bot, CircleUser, FileText, Server } from "lucide-solid";
+import {
+  ArrowLeft,
+  Blocks,
+  Bot,
+  CircleUser,
+  FileText,
+  KeyRound,
+  Server,
+  SlidersHorizontal,
+} from "lucide-solid";
 import styles from "./SettingsNav.module.css";
 
 interface SettingsSection {
@@ -26,6 +35,8 @@ export const SETTINGS_SECTIONS: readonly SettingsSection[] = [
   { href: "/settings/compute", label: "Compute", icon: Server },
   { href: "/settings/tools", label: "Tools", icon: Blocks },
   { href: "/settings/instructions", label: "Instructions", icon: FileText },
+  { href: "/settings/api-keys", label: "API keys", icon: KeyRound },
+  { href: "/settings/preferences", label: "Preferences", icon: SlidersHorizontal },
   { href: "/settings/account", label: "Account", icon: CircleUser },
 ];
 

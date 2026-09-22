@@ -1,0 +1,15 @@
+/* The placeholder of Skeleton.tsx: lines the height of the text that is
+   coming, in the same sunken ink as an empty field. */
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-2);
+}
+
+.line {
+  height: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+}

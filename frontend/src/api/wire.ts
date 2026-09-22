@@ -212,13 +212,6 @@ export type ClientEvent =
    */
   | { type: "models"; models: ModelOption[] }
   /**
-   * How much of the plan behind the session's harness account is spent.
-   * State, like `models`: the newest snapshot wins and the composer's rings
-   * read the last one. Named `plan_usage` and not `usage` because `usage`
-   * is already this session's own token count.
-   */
-  | { type: "plan_usage"; windows: UsageWindow[] }
-  /**
    * The slash commands the agent offers, as the running harness lists them.
    * State rather than history, like `models`: the newest list wins and the
    * composer's `/` palette reads the last one.
@@ -353,7 +346,6 @@ const CLIENT_EVENT_TYPES: ReadonlySet<string> = new Set([
   "model_changed",
   "permission_mode_changed",
   "models",
-  "plan_usage",
   "commands",
   "desktop_state",
   "desktop_active",

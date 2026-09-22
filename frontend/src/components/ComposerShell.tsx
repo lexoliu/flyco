@@ -25,13 +25,6 @@ export interface ComposerShellProps {
   placeholder: string;
   /** What the field is, for assistive technology. */
   label: string;
-  /**
-   * Which key sends.
-   *
-   * `mod-enter` on the home page, where a prompt is prose and prose has
-   * paragraphs; `enter` in a session, where a message is a message.
-   */
-  submitOn: "enter" | "mod-enter";
   disabled?: boolean | undefined;
   /** Extra key handling, e.g. a command palette. Returning `true` consumes the event. */
   onKeyDown?: ((event: KeyboardEvent) => boolean) | undefined;
@@ -54,14 +47,14 @@ export default function ComposerShell(props: ComposerShellProps) {
     if (props.onKeyDown?.(event) === true) {
       return;
     }
+    // Enter sends — in both composers, because they are one box and one
+    // key. Shift+Enter is the paragraph; ⌘/Ctrl+Enter sends too, since
+    // the hand that learned it on another app means send by it.
     if (event.key !== "Enter" || event.shiftKey) {
       return;
     }
-    const modified = event.metaKey || event.ctrlKey;
-    if (props.submitOn === "mod-enter" ? modified : !modified) {
-      event.preventDefault();
-      props.onSubmit();
-    }
+    event.preventDefault();
+    props.onSubmit();
   }
 
   /*

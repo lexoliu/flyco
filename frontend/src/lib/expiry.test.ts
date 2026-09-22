@@ -12,11 +12,10 @@ describe("credentialExpiry", () => {
     expect(credentialExpiry(undefined, NOW)).toBeNull();
   });
 
-  it("gives a distant expiry the date, and leaves the card reading Linked", () => {
+  it("gives a distant expiry the date", () => {
     const far = NOW + 60 * DAY;
     expect(credentialExpiry(far, NOW)).toEqual({
       level: "fine",
-      status: "Linked",
       sentence: `Expires ${formatDate(far)}`,
     });
   });
@@ -25,7 +24,6 @@ describe("credentialExpiry", () => {
     // The card that prompted this read `expires Sep 6, 2026` on Sep 5.
     expect(credentialExpiry(NOW + DAY, NOW)).toEqual({
       level: "soon",
-      status: "Expires soon",
       sentence: "Expires tomorrow",
     });
     expect(credentialExpiry(NOW + 3 * DAY, NOW)?.sentence).toBe("Expires in 3 days");
@@ -41,7 +39,6 @@ describe("credentialExpiry", () => {
     const gone = NOW - 2 * DAY;
     expect(credentialExpiry(gone, NOW)).toEqual({
       level: "gone",
-      status: "Expired",
       sentence: `Expired ${formatDate(gone)}`,
     });
     expect(credentialExpiry(NOW, NOW)?.level).toBe("gone");

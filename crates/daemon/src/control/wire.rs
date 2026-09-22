@@ -439,13 +439,6 @@ async fn collect<A: ControlApi>(
                 api.report_models(&models).await?;
                 continue;
             }
-            SessionOutput::PlanUsage { windows } => {
-                // Filed over REST for the same reason the model list is:
-                // the snapshot belongs to the account, which is D1. The
-                // control plane broadcasts it to the browsers itself.
-                api.report_usage(&windows).await?;
-                continue;
-            }
             SessionOutput::Event { event } => {
                 match &event {
                     HarnessEvent::TurnStarted { .. } => api.notify_turn_started().await?,

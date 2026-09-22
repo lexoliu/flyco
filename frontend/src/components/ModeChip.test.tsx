@@ -29,7 +29,7 @@ describe("ModeChip", () => {
     const options = getAllByRole("option");
     expect(options.map((option) => option.textContent)).toEqual([
       expect.stringContaining("Auto"),
-      expect.stringContaining("Default"),
+      expect.stringContaining("Ask"),
       expect.stringContaining("Plan"),
       expect.stringContaining("Accept edits"),
       expect.stringContaining("Yolo"),

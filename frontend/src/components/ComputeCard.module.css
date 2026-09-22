@@ -18,6 +18,12 @@
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  /* The controls take a line of their own rather than squeezing the name:
+     at phone width `Online`, `Rename` and `Remove` beside a name and an
+     enrolment date crushed the identity into a six-line column and still
+     pushed the card past the viewport, leaving the page scrolling
+     sideways. */
+  flex-wrap: wrap;
 }
 
 .mark {
@@ -36,8 +42,13 @@
 .identity {
   display: flex;
   flex-direction: column;
-  flex: 1 1 auto;
-  min-width: 0;
+  /* A basis rather than `auto`: on `auto` the identity asks for its whole
+     meta line, which wraps it off the mark's row and leaves the glyph
+     alone on a line of its own. Wide enough to hold a name and its date
+     on a readable measure; below it the row wraps rather than shrinking
+     this further. */
+  flex: 1 1 11rem;
+  min-width: 11rem;
 }
 
 .title {

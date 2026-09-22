@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   MACHINE_STATE_LABEL,
-  autoSentence,
   capacityLabel,
   chipLabel,
   detentLabel,
@@ -9,6 +8,7 @@ import {
   entryName,
   hasFreeGrant,
   machineChip,
+  priceLabel,
   runtimeOf,
 } from "./machines";
 import type { MachineCatalogEntry, MachineState, MachineView } from "../api/client";
@@ -157,36 +157,41 @@ describe("entryName", () => {
 });
 
 describe("detentLabel", () => {
-  it("reads a virtual machine as its type, its size and its price", () => {
-    expect(detentLabel(vm(), false)).toBe("Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr");
+  it("reads a virtual machine as its type and its size", () => {
+    expect(detentLabel(vm())).toBe("Standard_D4s_v6 · 4 vCPU / 16 GiB");
   });
 
-  it("reads a container as its size, and says the grant covers it", () => {
-    expect(detentLabel(container(), false)).toBe(
-      "Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month",
-    );
+  it("reads a container as its size, which is the whole of its identity", () => {
+    expect(detentLabel(container())).toBe("Container · 4 vCPU · 8 GiB");
   });
 
-  it("says nothing about a grant on a container the provider bills for", () => {
-    expect(detentLabel(container({ free_grant: null }), false)).toBe(
-      "Container · 4 vCPU · 8 GiB · $0.21/hr",
-    );
+  it("says only the name of a machine flyco never measured", () => {
+    expect(detentLabel(ownMachine())).toBe("build.lexo.cool");
+  });
+});
+
+describe("priceLabel", () => {
+  it("quotes the rate a machine bills at", () => {
+    expect(priceLabel(vm(), false)).toBe("$0.19/hr");
+    expect(priceLabel(vm(), true)).toBe("$0.10/hr");
+  });
+
+  it("says the grant instead, where the provider covers the machine", () => {
+    expect(priceLabel(container(), false)).toBe("Free this month");
   });
 
   it("quotes no price on the machine the user owns", () => {
-    expect(detentLabel(ownMachine(), true)).toBe("build.lexo.cool · your hardware");
+    expect(priceLabel(ownMachine(), true)).toBe("your hardware");
   });
 });
 
 describe("chipLabel", () => {
-  it("drops a virtual machine's size, because its type is the answer", () => {
-    expect(chipLabel(vm(), true)).toBe("D4s_v6 · $0.10/hr");
+  it("carries the name and the size, and no price", () => {
+    expect(chipLabel(vm())).toBe("D4s_v6 · 4 vCPU · 16 GiB");
   });
 
   it("keeps a container's size, because `Container` alone names no machine", () => {
-    expect(chipLabel(container(), true)).toBe(
-      "Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month",
-    );
+    expect(chipLabel(container())).toBe("Container · 4 vCPU · 8 GiB");
   });
 });
 
@@ -201,26 +206,6 @@ describe("hasFreeGrant", () => {
     expect(hasFreeGrant(container())).toBe(true);
     expect(hasFreeGrant(vm())).toBe(false);
     expect(hasFreeGrant(undefined)).toBe(false);
-  });
-});
-
-describe("autoSentence", () => {
-  it("names the grant when Auto landed on a container the provider gives away", () => {
-    expect(autoSentence(container())).toBe(
-      "A container your provider gives away this month, which flyco spends before it spends money.",
-    );
-  });
-
-  it("still names the machine the user enrolled when that is what Auto picked", () => {
-    expect(autoSentence(ownMachine())).toBe(
-      "build.lexo.cool — the machine you enrolled, which flyco meters no spend on.",
-    );
-  });
-
-  it("otherwise quotes the rule that decided", () => {
-    expect(autoSentence(vm())).toBe(
-      "The cheapest curated Linux type with at least 4 vCPU and 16 GiB.",
-    );
   });
 });
 

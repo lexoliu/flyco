@@ -36,6 +36,7 @@ use crate::harness_accounts::{self, StoredCredential};
 use crate::openai::{self, CodexClient, CodexOauth as _, DevicePoll, TokenRequest};
 use crate::problem::Outcome;
 use crate::respond::Created;
+use crate::vendors::Vendors;
 
 /// How long `OpenAI` keeps a device authorization alive, and therefore how
 /// long the attempt beside it is worth keeping.
@@ -133,10 +134,13 @@ impl Responder for CodexOauthProgress {
 pub async fn start(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
-    State(codex): State<CodexClient>,
+    State(vendors): State<Vendors>,
     kv: Kv,
 ) -> Outcome<Json<CodexOauthStart>> {
-    begin(&config, &codex, &kv, user.id).await.map(Json).into()
+    begin(&config, &vendors.codex, &kv, user.id)
+        .await
+        .map(Json)
+        .into()
 }
 
 async fn begin(
@@ -177,7 +181,7 @@ async fn begin(
 pub async fn poll(
     State(user): State<CurrentUser>,
     State(config): State<ApiConfig>,
-    State(codex): State<CodexClient>,
+    State(vendors): State<Vendors>,
     params: Params,
     kv: Kv,
     db: Db,
@@ -186,14 +190,14 @@ pub async fn poll(
         Ok(id) => id,
         Err(error) => return Err(error).into(),
     };
-    ask(&config, &codex, &kv, &db, user.id, attempt_id)
+    ask(&config, &vendors, &kv, &db, user.id, attempt_id)
         .await
         .into()
 }
 
 async fn ask(
     config: &ApiConfig,
-    codex: &CodexClient,
+    vendors: &Vendors,
     kv: &Kv,
     db: &Db,
     user: UserId,
@@ -212,7 +216,8 @@ async fn ask(
         return Err(ApiError::CodexOauthAttemptExpired);
     }
 
-    let poll = codex
+    let poll = vendors
+        .codex
         .poll_device_code(&attempt.device_auth_id, &attempt.user_code)
         .await?;
     let DevicePoll::Approved(code) = poll else {
@@ -223,7 +228,8 @@ async fn ask(
     // the attempt is spent here whether or not the exchange then works.
     kv.delete(&key).await?;
 
-    let grant = codex
+    let grant = vendors
+        .codex
         .exchange(TokenRequest::AuthorizationCode {
             code: &code.authorization_code,
             redirect_uri: openai::REDIRECT_URI,
@@ -237,8 +243,16 @@ async fn ask(
     let label = grant
         .email_address()
         .unwrap_or_else(|| UNNAMED_ACCOUNT.to_owned());
-    let view =
-        harness_accounts::store(db, config, user, &label, HarnessKind::Codex, &credential).await?;
+    let view = harness_accounts::store(
+        db,
+        config,
+        vendors,
+        user,
+        &label,
+        HarnessKind::Codex,
+        &credential,
+    )
+    .await?;
     Ok(CodexOauthProgress::Linked(view))
 }
 

@@ -1,0 +1,12 @@
+-- Flyco control plane: a session whose machine must not be suspended for
+-- idleness yet.
+--
+-- The idle sweep stops a machine after SUSPEND_AFTER_IDLE_SECS because
+-- compute bills by the minute. That is wrong exactly when the agent is
+-- doing something the control plane cannot see it doing — a long build, a
+-- soak test, a watch loop — and the user is the only one who knows it.
+--
+-- `awake_until_unix` is the instant the hold ends, not a flag: a machine
+-- held awake for ever is a bill nobody chose. NULL is the ordinary clock,
+-- which is almost every session.
+ALTER TABLE sessions ADD COLUMN awake_until_unix INTEGER;

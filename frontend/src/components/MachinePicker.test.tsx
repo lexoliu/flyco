@@ -76,7 +76,7 @@ describe("MachineResize", () => {
     expect(getByLabelText("Machine")).toHaveValue("0");
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
-      "m7i-flex.xlarge · 4 vCPU / 16 GiB · $0.06/hr",
+      "m7i-flex.xlarge · 4 vCPU / 16 GiB",
     );
   });
 
@@ -110,13 +110,11 @@ describe("MachineResize", () => {
     expect(onCancel).toHaveBeenCalled();
   });
 
-  it("prices the detents the way the machine is actually billed", () => {
-    // The machine holds spot capacity, so the slider quotes spot prices.
-    const { getByLabelText } = mount({ current: { ...MACHINE, spot: false } });
-    expect(getByLabelText("Machine")).toHaveAttribute(
-      "aria-valuetext",
-      "m7i-flex.xlarge · 4 vCPU / 16 GiB · $0.15/hr",
-    );
+  it("prices the detent the way the machine is actually billed", () => {
+    // The machine holds on-demand capacity, so the line under the track
+    // quotes the on-demand rate rather than the spot one.
+    const { getByText } = mount({ current: { ...MACHINE, spot: false } });
+    expect(getByText("$0.15/hr")).toBeInTheDocument();
   });
 });
 

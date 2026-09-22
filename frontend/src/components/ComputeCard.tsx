@@ -32,6 +32,7 @@ import {
   getDefaultMachine,
   type CloudProviderKind,
   type CloudUsageRow,
+  type MachineCatalogEntry,
   type ProviderAccountView,
 } from "../api/client";
 import { ApiProblem } from "../api/problem";
@@ -293,18 +294,36 @@ export default function ComputeCard(props: ComputeCardProps) {
         </Show>
       </Fact>
 
-      <Fact label="Spot capacity">
-        <span class={styles.toggleCell}>
-          <Toggle
-            label={`Use spot capacity on ${props.account.label}`}
-            checked={props.spot}
-            onChange={props.onSpot}
-          />
-          <span class={styles.dim}>
-            {props.spot ? "Cheaper; flyco handles eviction" : "Uninterruptible, and dearer"}
+      {/*
+        What the provider gives away before it bills anything, where it
+        gives away something: a codespace's included core-hours are the
+        reason a new user pays nothing at all for weeks, and a page about
+        what compute costs that did not say so would be missing the first
+        number a reader looks for.
+      */}
+      <Show when={freeHours(machine()?.entry)}>
+        {(hours) => <Fact label="Free each month">{hours()} vCPU-hours</Fact>}
+      </Show>
+
+      {/*
+        Only where the provider sells interruptible capacity. GitHub bills
+        a codespace one way, and hardware the user enrolled is already
+        theirs, so on those the toggle was a switch that repriced nothing.
+      */}
+      <Show when={SELLS_SPOT.has(props.account.kind)}>
+        <Fact label="Spot capacity">
+          <span class={styles.toggleCell}>
+            <Toggle
+              label={`Use spot capacity on ${props.account.label}`}
+              checked={props.spot}
+              onChange={props.onSpot}
+            />
+            <span class={styles.dim}>
+              {props.spot ? "Cheaper; flyco handles eviction" : "Uninterruptible, and dearer"}
+            </span>
           </span>
-        </span>
-      </Fact>
+        </Fact>
+      </Show>
 
       <Fact label="This billing period">
         <Show
@@ -341,6 +360,19 @@ export default function ComputeCard(props: ComputeCardProps) {
       </Fact>
     </CardShell>
   );
+}
+
+/**
+ * The vCPU-hours a provider gives away each month, where it gives any.
+ *
+ * The grant is stated in the provider's own meters — vCPU-seconds, and on
+ * some providers a memory meter beside it — because that is how it is
+ * actually spent. Hours are what a reader counts in, and the vCPU meter is
+ * the one that runs out first on every machine flyco picks.
+ */
+function freeHours(entry: MachineCatalogEntry | undefined): number | undefined {
+  const seconds = entry?.free_grant?.vcpu_seconds_per_month;
+  return seconds === undefined || seconds === 0 ? undefined : Math.round(seconds / 3600);
 }
 
 /** The usage row, when it carries any spend at all. */
@@ -385,6 +417,15 @@ export function YourHardware() {
  * about an account that *was* read, so it is stated as one; anything else is
  * a failure, and its own message is the most honest thing to show.
  */
+/**
+ * The providers that sell interruptible capacity at a lower price.
+ *
+ * GitHub bills a codespace at one rate, and a machine the user enrolled is
+ * already theirs; a spot toggle on either is a switch with nothing behind
+ * it.
+ */
+const SELLS_SPOT: ReadonlySet<CloudProviderKind> = new Set(["azure", "aws", "gcp"]);
+
 function machineAbsence(error: unknown, kind: CloudProviderKind): string {
   if (catalogNotReady(error)) {
     return readingMachines([kind]);

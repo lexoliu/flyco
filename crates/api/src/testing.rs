@@ -14,7 +14,7 @@ use skyzen_services::{Db, Queue, Storage};
 use skyzen_test::mock::{InMemoryQueue, InMemoryStorage};
 
 use crate::anthropic::{
-    Account, AnthropicError, ClaudeClient, ClaudeOauth, TokenRequest, TokenSet,
+    Account, AnthropicError, ClaudeClient, ClaudeOauth, PlanUsageDocument, TokenRequest, TokenSet,
 };
 use crate::app::router;
 use crate::clouds::{CloudLink, Clouds};
@@ -36,7 +36,7 @@ use crate::vendors::Vendors;
 
 /// The schema every database-backed test starts from, in the order
 /// `wrangler d1 migrations apply` would run it.
-pub const MIGRATIONS: [&str; 34] = [
+pub const MIGRATIONS: [&str; 36] = [
     include_str!("../../../migrations/0001_init.sql"),
     include_str!("../../../migrations/0002_sessions.sql"),
     include_str!("../../../migrations/0003_daemon.sql"),
@@ -71,6 +71,8 @@ pub const MIGRATIONS: [&str; 34] = [
     include_str!("../../../migrations/0033_request_budgets.sql"),
     include_str!("../../../migrations/0034_budget_folded_events.sql"),
     include_str!("../../../migrations/0035_marketplaces.sql"),
+    include_str!("../../../migrations/0036_drop_harness_usage_snapshot.sql"),
+    include_str!("../../../migrations/0037_keep_machine_awake.sql"),
 ];
 
 /// Client id the test configuration presents to GitHub.
@@ -640,6 +642,13 @@ pub const CLAUDE_TOKEN_LIFETIME: u64 = 8 * 60 * 60;
 /// The address [`TestClaude`] reports, which becomes the account's label.
 pub const CLAUDE_ACCOUNT_EMAIL: &str = "me@lexo.cool";
 
+/// A stored access token Anthropic refuses to read the plan for.
+///
+/// Linked accounts whose grant has gone bad are a state of their own — the
+/// plan is unreadable while the credential is still on file — and this is
+/// how a test puts an account into it.
+pub const CLAUDE_UNREADABLE_TOKEN: &str = "sk-ant-oat01-unreadable";
+
 /// One repository's files, as [`TestGithub`] answers for them.
 ///
 /// A marketplace in a test is a list of path and bytes: the tree is its
@@ -826,6 +835,23 @@ impl TestClaude {
         }
     }
 
+    /// The plan a live read answers with.
+    ///
+    /// Built against the clock rather than parsed from a frozen fixture,
+    /// because the whole point of a live read is that its windows are
+    /// still open: a document with instants in the past describes windows
+    /// that have turned over, and flyco draws none of those.
+    fn plan() -> PlanUsageDocument {
+        let now = crate::clock::now_unix();
+        let document = serde_json::json!({
+            "five_hour": { "utilization": 43.4, "resets_at": iso8601(now + 2 * 60 * 60) },
+            "seven_day": { "utilization": 78.0, "resets_at": iso8601(now + 3 * 24 * 60 * 60) },
+            "seven_day_opus": { "utilization": 100.0, "resets_at": iso8601(now + 3 * 24 * 60 * 60) },
+            "seven_day_sonnet": { "utilization": null, "resets_at": null },
+        });
+        serde_json::from_value(document).expect("the fixture is a plan document")
+    }
+
     /// Anthropic's own answer to a code or refresh token it will not take.
     fn refused() -> AnthropicError {
         AnthropicError::Rejected {
@@ -874,6 +900,28 @@ impl ClaudeOauth for TestClaude {
             }
         })
     }
+
+    fn usage(
+        &self,
+        access_token: &str,
+    ) -> impl Future<Output = Result<PlanUsageDocument, AnthropicError>> + Send {
+        ready(if access_token == CLAUDE_UNREADABLE_TOKEN {
+            // A token Anthropic will not answer for: the account is linked
+            // and the plan cannot be read, which is the third state the
+            // account view has to be able to say out loud.
+            Err(AnthropicError::Status(401))
+        } else {
+            Ok(Self::plan())
+        })
+    }
+}
+
+/// An instant as Anthropic states one: RFC 3339, to the second.
+fn iso8601(unix: u64) -> String {
+    time::OffsetDateTime::from_unix_timestamp(i64::try_from(unix).expect("a plausible clock"))
+        .expect("a plausible clock")
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("RFC 3339 formats any instant")
 }
 
 /// The only pasted key [`TestDevin`] resolves an identity for.
@@ -1902,6 +1950,21 @@ pub async fn seed_harness_account(db: &Db, user: UserId, harness: HarnessKind) -
         },
     };
     seed_credential(db, user, harness, &credential).await
+}
+
+/// Links a Claude account whose token Anthropic will not read the plan
+/// for, so a test can put an account into the third plan state: linked,
+/// and its plan unknown.
+pub async fn seed_unreadable_claude_account(db: &Db, user: UserId) -> HarnessAccountId {
+    seed_credential(
+        db,
+        user,
+        HarnessKind::ClaudeCode,
+        &StoredCredential::OauthToken {
+            token: CLAUDE_UNREADABLE_TOKEN.to_owned(),
+        },
+    )
+    .await
 }
 
 /// Links a Claude account holding an OAuth grant that expires at

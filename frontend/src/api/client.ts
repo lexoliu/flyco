@@ -308,6 +308,23 @@ export function resumeSession(
   return requestJson("POST", `/v1/sessions/${id}/resume`);
 }
 
+/**
+ * Holds a session's machine awake for `minutes`, or ends the hold.
+ *
+ * The idle sweep stops a machine nobody has typed into for half an hour,
+ * which is wrong while a build, a soak test or a watch loop is running —
+ * the session looks idle because the work is the machine's, not the
+ * user's. `null` gives the machine back to the sweep.
+ */
+export function keepSessionAwake(
+  id: string,
+  minutes: number | null,
+): Promise<JsonResponse<"flyco_api::app::keep_session_awake", 200>> {
+  return requestJson("PUT", `/v1/sessions/${id}/awake`, {
+    json: minutes === null ? {} : { minutes },
+  });
+}
+
 export function archiveSession(
   id: string,
   options: { discardUncommitted?: boolean } = {},
