@@ -2,39 +2,40 @@
 //! directory.
 //!
 //! The bundle is the request body, not a JSON field: a skill is a zip, and
-//! base64 inside a document would double its size to no end. The name and
-//! the harness it belongs to therefore ride the query string, which is what
-//! keeps the body exactly the bytes that get stored.
+//! base64 inside a document would double its size to no end. The name
+//! therefore rides the query string, which is what keeps the body exactly
+//! the bytes that get stored.
 //!
-//! Agents cannot write either harness's skills directory — it is
-//! read-only — so a skill arrives only through the control plane: an
-//! upload on Settings → Tools lands on this route, and a marketplace
-//! install goes through [`crate::skill_catalog`] into the same `store`.
+//! A skill belongs to the user, not to a harness — the daemon mounts the
+//! same set into every harness's skills directory on the machine, so the
+//! registry names no scope at all.
+//!
+//! Agents cannot write a harness's skills directory — it is read-only —
+//! so a skill arrives only through the control plane: an upload on
+//! Settings → Tools lands on this route, and a marketplace install goes
+//! through [`crate::skill_catalog`] into the same `store`.
 //!
 //! # Where a bundle lives
 //!
 //! The zip is object storage content and the row is its index: `skills` holds
-//! the name, the scope and the size, and the bytes sit at
-//! `skills/{id}.zip`. Claude Code and Codex read different global skills
-//! directories, so [`SkillScope`] is what decides which one a bundle is
-//! installed into.
+//! the name and the size, and the bytes sit at `skills/{id}.zip`.
 //!
 //! The machine pulls, nothing pushes: a session's daemon reads the owner's
 //! mount list from `GET /v1/sessions/{id}/skills` and each bundle from
 //! `GET /v1/sessions/{id}/skills/{skill}/bundle`, then unpacks them into
-//! the harness's directory before the agent starts (see
+//! every harness's directory before the agent starts (see
 //! `crates/daemon/src/skills.rs`). A live session picks a change up the
 //! next time its machine starts, exactly as it does for MCP servers — a
 //! skills directory is read when the harness launches, and swapping it
 //! mid-turn would leave the model holding skills that no longer exist.
 //!
 //! The object is written before the row, and the row's `id` is reused when a
-//! bundle of the same name and scope already exists. D1 has no transactions,
-//! so one of the two orders has to be chosen: this one can leave an object no
-//! row names, which is invisible; the other would leave a row naming an
-//! object that is not there, which every reader would trip over.
+//! bundle of the same name already exists. D1 has no transactions, so one of
+//! the two orders has to be chosen: this one can leave an object no row
+//! names, which is invisible; the other would leave a row naming an object
+//! that is not there, which every reader would trip over.
 
-use flyco_core::{CurrentUser, SkillId, SkillMount, SkillScope, SkillView, UserId};
+use flyco_core::{CurrentUser, SkillId, SkillMount, SkillView, UserId};
 use serde::Deserialize;
 use skyzen::extract::Query;
 use skyzen::routing::{CreateRouteNode, Params, Route, RouteNode, Routes as _};
@@ -67,9 +68,6 @@ const ZIP_MAGIC: [u8; 4] = [b'P', b'K', 0x03, 0x04];
 pub struct UploadSkill {
     /// Directory name the bundle is installed under.
     pub name: String,
-    /// Which harness's skills directory it belongs in. Claude Code and Codex
-    /// read different ones, so this is not derivable from the bundle.
-    pub scope: SkillScope,
 }
 
 /// The columns every read on this path projects.
@@ -77,7 +75,6 @@ pub struct UploadSkill {
 struct SkillRow {
     id: SkillId,
     name: String,
-    scope: SkillScope,
     size_bytes: u64,
     uploaded_at_unix: u64,
 }
@@ -87,7 +84,6 @@ impl From<SkillRow> for SkillView {
         Self {
             id: row.id,
             name: row.name,
-            scope: row.scope,
             size_bytes: row.size_bytes,
             uploaded_at_unix: row.uploaded_at_unix,
         }
@@ -99,7 +95,6 @@ impl From<SkillRow> for SkillMount {
         Self {
             id: row.id,
             name: row.name,
-            scope: row.scope,
             size_bytes: row.size_bytes,
         }
     }
@@ -160,7 +155,7 @@ async fn list_skills(State(user): State<CurrentUser>, db: Db) -> Outcome<Json<Ve
 async fn list(db: &Db, user: UserId) -> Result<Vec<SkillView>, ApiError> {
     let rows: Vec<SkillRow> = sql!(
         db,
-        "SELECT id, name, scope, size_bytes, uploaded_at_unix FROM skills \
+        "SELECT id, name, size_bytes, uploaded_at_unix FROM skills \
          WHERE user_id = {user} ORDER BY uploaded_at_unix DESC, id"
     )
     .fetch_all()
@@ -169,7 +164,7 @@ async fn list(db: &Db, user: UserId) -> Result<Vec<SkillView>, ApiError> {
     Ok(rows.into_iter().map(Into::into).collect())
 }
 
-/// Uploads a skill bundle, replacing any bundle of the same name and scope.
+/// Uploads a skill bundle, replacing any bundle of the same name.
 #[skyzen::openapi]
 async fn upload_skill(
     State(user): State<CurrentUser>,
@@ -178,7 +173,7 @@ async fn upload_skill(
     db: Db,
     body: Bytes,
 ) -> Outcome<Created<Json<SkillView>>> {
-    store(&db, &storage, user.id, &upload.name, upload.scope, &body)
+    store(&db, &storage, user.id, &upload.name, &body)
         .await
         .map(|view| Created(Json(view)))
         .into()
@@ -195,7 +190,6 @@ pub(crate) async fn store(
     storage: &Storage,
     user: UserId,
     name: &str,
-    scope: SkillScope,
     body: &[u8],
 ) -> Result<SkillView, ApiError> {
     let name = checked_name(name)?;
@@ -203,7 +197,7 @@ pub(crate) async fn store(
 
     let existing: Option<SkillId> = sql!(
         db,
-        "SELECT id FROM skills WHERE user_id = {user} AND scope = {scope} AND name = {name.as_str()}"
+        "SELECT id FROM skills WHERE user_id = {user} AND name = {name.as_str()}"
     )
     .fetch_scalar_optional()
     .await?;
@@ -214,16 +208,16 @@ pub(crate) async fn store(
     let size = body.len() as u64;
     let row: SkillRow = sql!(
         db,
-        "INSERT INTO skills (id, user_id, name, scope, size_bytes, uploaded_at_unix) \
-         VALUES ({id}, {user}, {name}, {scope}, {size}, {now_unix()}) \
-         ON CONFLICT (user_id, scope, name) DO UPDATE SET \
+        "INSERT INTO skills (id, user_id, name, size_bytes, uploaded_at_unix) \
+         VALUES ({id}, {user}, {name}, {size}, {now_unix()}) \
+         ON CONFLICT (user_id, name) DO UPDATE SET \
          size_bytes = excluded.size_bytes, uploaded_at_unix = excluded.uploaded_at_unix \
-         RETURNING id, name, scope, size_bytes, uploaded_at_unix"
+         RETURNING id, name, size_bytes, uploaded_at_unix"
     )
     .fetch_one()
     .await?;
 
-    tracing::info!(skill = %row.id, name = %row.name, ?scope, bytes = size, "stored a skill bundle");
+    tracing::info!(skill = %row.id, name = %row.name, bytes = size, "stored a skill bundle");
     Ok(row.into())
 }
 
@@ -286,7 +280,7 @@ async fn remove(
 async fn load(db: &Db, user: UserId, id: SkillId) -> Result<SkillRow, ApiError> {
     sql!(
         db,
-        "SELECT id, name, scope, size_bytes, uploaded_at_unix FROM skills \
+        "SELECT id, name, size_bytes, uploaded_at_unix FROM skills \
          WHERE id = {id} AND user_id = {user}"
     )
     .fetch_optional()
@@ -306,7 +300,7 @@ async fn load(db: &Db, user: UserId, id: SkillId) -> Result<SkillRow, ApiError> 
 pub async fn mounts(db: &Db, user: UserId) -> Result<Vec<SkillMount>, ApiError> {
     let rows: Vec<SkillRow> = sql!(
         db,
-        "SELECT id, name, scope, size_bytes, uploaded_at_unix FROM skills \
+        "SELECT id, name, size_bytes, uploaded_at_unix FROM skills \
          WHERE user_id = {user} ORDER BY name, id"
     )
     .fetch_all()

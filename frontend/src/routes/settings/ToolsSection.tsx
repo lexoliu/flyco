@@ -27,17 +27,11 @@ import {
   uploadSkill,
   type McpServerConfig,
   type McpServerView,
-  type SkillScope,
   type SkillView,
 } from "../../api/client";
 import { formatDate } from "../../lib/dates";
 import { cx } from "../../lib/cx";
 import styles from "./Settings.module.css";
-
-const SCOPE_LABEL: Record<SkillScope, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-};
 
 /** Where `Add from catalog` goes: the picker over the official registry. */
 const MCP_CATALOG = "/settings/tools/mcp-catalog";
@@ -278,7 +272,7 @@ function SkillCard(props: { skill: SkillView; onRemove: () => void }) {
         <div class={styles.identity}>
           <span class={styles.cardTitle}>{props.skill.name}</span>
           <span class={styles.cardMeta}>
-            {SCOPE_LABEL[props.skill.scope]} · updated {formatDate(props.skill.uploaded_at_unix)}
+            updated {formatDate(props.skill.uploaded_at_unix)}
           </span>
         </div>
         <div class={styles.actions}>
@@ -293,7 +287,6 @@ function SkillCard(props: { skill: SkillView; onRemove: () => void }) {
 
 /** The `.zip` a skill arrives as, with the directory name taken from the file. */
 function SkillDropZone(props: { onUploaded: () => void }) {
-  const [scope, setScope] = createSignal<SkillScope>("claude");
   const [over, setOver] = createSignal(false);
   const [uploading, setUploading] = createSignal(false);
   const [error, setError] = createSignal<unknown>(null);
@@ -316,7 +309,7 @@ function SkillDropZone(props: { onUploaded: () => void }) {
     setUploading(true);
     setError(null);
     try {
-      await uploadSkill(directoryOf(file.name), scope(), file);
+      await uploadSkill(directoryOf(file.name), file);
       props.onUploaded();
     } catch (err) {
       setError(err);
@@ -348,20 +341,6 @@ function SkillDropZone(props: { onUploaded: () => void }) {
       <p class={styles.emptyLine}>
         Drop a skill's <code>.zip</code> here. Its file name becomes the directory name.
       </p>
-      <div class={styles.segmented} role="group" aria-label="Which harness gets the skill">
-        <For each={Object.entries(SCOPE_LABEL) as [SkillScope, string][]}>
-          {([value, label]) => (
-            <button
-              type="button"
-              class={cx(styles.segment, scope() === value && styles.segmentOn)}
-              aria-pressed={scope() === value}
-              onClick={() => setScope(value)}
-            >
-              {label}
-            </button>
-          )}
-        </For>
-      </div>
       <input
         ref={picker}
         type="file"

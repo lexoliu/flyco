@@ -17,10 +17,10 @@
 //! # Installing
 //!
 //! An install copies the skill's directory into the same zipped bundle a
-//! hand-uploaded skill is stored as ([`crate::skills`]), once per harness
-//! the user chose. Nothing downstream knows a skill came from a
-//! marketplace: it is a bundle in object storage and a row in `skills`,
-//! and the machine installs it the way it installs any other.
+//! hand-uploaded skill is stored as ([`crate::skills`]). Nothing
+//! downstream knows a skill came from a marketplace: it is a bundle in
+//! object storage and a row in `skills`, and the machine installs it the
+//! way it installs any other.
 //!
 //! The archive is **stored rather than deflated**. A skill is text and a
 //! few scripts, the bundle is unpacked on a machine seconds later, and a
@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 
 use flyco_core::{
     CatalogSkill, CurrentUser, InstallCatalogSkill, MarketplaceProblem, RepoSlug, SkillCatalog,
-    SkillScope, SkillView, UserId,
+    SkillView, UserId,
 };
 use serde::{Deserialize, Serialize};
 use skyzen::routing::{CreateRouteNode, Route, RouteNode, Routes as _};
@@ -677,7 +677,7 @@ async fn catalog(db: &Db, kv: &Kv, queue: &Queue, user: UserId) -> Result<SkillC
     Ok(catalog)
 }
 
-/// Installs one catalog skill, once per harness the caller chose.
+/// Installs one catalog skill.
 #[skyzen::openapi]
 async fn install_catalog_skill(
     State(user): State<CurrentUser>,
@@ -687,10 +687,10 @@ async fn install_catalog_skill(
     db: Db,
     kv: Kv,
     storage: Storage,
-) -> Outcome<Created<Json<Vec<SkillView>>>> {
+) -> Outcome<Created<Json<SkillView>>> {
     install(&db, &config, &github, &kv, &storage, user.id, request)
         .await
-        .map(|views| Created(Json(views)))
+        .map(|view| Created(Json(view)))
         .into()
 }
 
@@ -703,17 +703,7 @@ async fn install(
     storage: &Storage,
     user: UserId,
     request: InstallCatalogSkill,
-) -> Result<Vec<SkillView>, ApiError> {
-    if request.scopes.is_empty() {
-        return Err(ApiError::InvalidSkill("choose at least one harness"));
-    }
-    let mut scopes = request.scopes.clone();
-    scopes.sort_by_key(|scope| match scope {
-        SkillScope::Claude => 0,
-        SkillScope::Codex => 1,
-    });
-    scopes.dedup();
-
+) -> Result<SkillView, ApiError> {
     let marketplace = marketplaces::all(db, user)
         .await?
         .into_iter()
@@ -743,16 +733,12 @@ async fn install(
     let token = users::github_token(db, config, github, user).await?;
     let bundle = bundle(github, &token, &repo, &skill.git_ref, &skill.path).await?;
 
-    let mut installed = Vec::new();
-    for scope in scopes {
-        installed.push(skills::store(db, storage, user, &skill.name, scope, &bundle).await?);
-    }
+    let installed = skills::store(db, storage, user, &skill.name, &bundle).await?;
     tracing::info!(
         marketplace = %marketplace.repo,
         repo = %skill.repo,
         skill = %skill.name,
         bytes = bundle.len(),
-        scopes = installed.len(),
         "installed a skill from a marketplace"
     );
     Ok(installed)

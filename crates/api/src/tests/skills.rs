@@ -6,7 +6,7 @@
 //! than accumulating a second one, that a delete takes the object with the
 //! row, and that one user's skills are unreachable from another's.
 
-use flyco_core::{CurrentUser, Problem, SkillMount, SkillScope, SkillView};
+use flyco_core::{CurrentUser, Problem, SkillMount, SkillView};
 use skyzen_services::{Db, Kv, Storage};
 use skyzen_test::TestContext;
 
@@ -24,8 +24,8 @@ async fn sign_in(kv: &Kv, user: CurrentUser) -> String {
     session::issue(kv, user.id).await.expect("issue a session")
 }
 
-fn upload_path(name: &str, scope: &str) -> String {
-    format!("/v1/skills?name={name}&scope={scope}")
+fn upload_path(name: &str) -> String {
+    format!("/v1/skills?name={name}")
 }
 
 #[skyzen::test]
@@ -40,7 +40,7 @@ async fn an_upload_stores_the_bundle_and_indexes_it(
     let client = ctx.client(router);
 
     let created = client
-        .post(&upload_path("release-notes", "claude"))
+        .post(&upload_path("release-notes"))
         .bearer(&token)
         .body(BUNDLE)
         .send()
@@ -49,7 +49,6 @@ async fn an_upload_stores_the_bundle_and_indexes_it(
 
     let view: SkillView = created.json();
     assert_eq!(view.name, "release-notes");
-    assert_eq!(view.scope, SkillScope::Claude);
     assert_eq!(view.size_bytes, BUNDLE.len() as u64);
 
     let stored = storage
@@ -83,7 +82,7 @@ async fn re_uploading_a_name_replaces_the_bundle_it_had(
     let client = ctx.client(router);
 
     let first: SkillView = client
-        .post(&upload_path("changelog", "codex"))
+        .post(&upload_path("changelog"))
         .bearer(&token)
         .body(BUNDLE)
         .send()
@@ -91,7 +90,7 @@ async fn re_uploading_a_name_replaces_the_bundle_it_had(
         .json();
 
     let second: SkillView = client
-        .post(&upload_path("changelog", "codex"))
+        .post(&upload_path("changelog"))
         .bearer(&token)
         .body(BIGGER)
         .send()
@@ -115,14 +114,21 @@ async fn re_uploading_a_name_replaces_the_bundle_it_had(
 }
 
 #[skyzen::test]
-async fn one_name_may_exist_once_per_harness(ctx: TestContext, kv: Kv, db: Db, _storage: Storage) {
+async fn one_name_is_one_row_no_matter_how_often_it_is_uploaded(
+    ctx: TestContext,
+    kv: Kv,
+    db: Db,
+    _storage: Storage,
+) {
     let router = migrated_router(&db).await;
     let token = sign_in(&kv, seed_user(&db).await).await;
     let client = ctx.client(router);
 
-    for scope in ["claude", "codex"] {
+    // A skill is the user's, shared by every harness, so re-uploading the
+    // name is a replacement, never a second row.
+    for _ in 0..2 {
         client
-            .post(&upload_path("shared", scope))
+            .post(&upload_path("shared"))
             .bearer(&token)
             .body(BUNDLE)
             .send()
@@ -131,7 +137,7 @@ async fn one_name_may_exist_once_per_harness(ctx: TestContext, kv: Kv, db: Db, _
     }
 
     let listed: Vec<SkillView> = client.get("/v1/skills").bearer(&token).send().await.json();
-    assert_eq!(listed.len(), 2, "the scopes are separate directories");
+    assert_eq!(listed.len(), 1, "one name is one skill");
 }
 
 #[skyzen::test]
@@ -146,7 +152,7 @@ async fn deleting_a_skill_takes_its_bundle_with_it(
     let client = ctx.client(router);
 
     let view: SkillView = client
-        .post(&upload_path("obsolete", "claude"))
+        .post(&upload_path("obsolete"))
         .bearer(&token)
         .body(BUNDLE)
         .send()
@@ -198,7 +204,7 @@ async fn another_users_skill_is_indistinguishable_from_absent(
     let client = ctx.client(router);
 
     let view: SkillView = client
-        .post(&upload_path("private", "claude"))
+        .post(&upload_path("private"))
         .bearer(&owner_token)
         .body(BUNDLE)
         .send()
@@ -237,7 +243,7 @@ async fn a_body_that_is_not_a_zip_is_refused(ctx: TestContext, kv: Kv, db: Db, _
     let client = ctx.client(router);
 
     let response = client
-        .post(&upload_path("not-a-zip", "claude"))
+        .post(&upload_path("not-a-zip"))
         .bearer(&token)
         .body("just some text")
         .send()
@@ -260,7 +266,7 @@ async fn a_name_no_directory_could_hold_is_refused(
     // The name becomes a directory under the harness's skills directory, so
     // a path separator would escape the prefix it is meant to live in.
     let response = client
-        .post(&upload_path("..%2Fescape", "claude"))
+        .post(&upload_path("..%2Fescape"))
         .bearer(&token)
         .body(BUNDLE)
         .send()
@@ -286,12 +292,12 @@ async fn a_sessions_daemon_sees_exactly_its_owners_skills(
         .token;
     let client = ctx.client(router);
 
-    // Two of the owner's, one of them a Codex bundle, and one of somebody
-    // else's: the mount list carries the owner's whole registry because the
-    // daemon, not the control plane, knows which harness it will run.
-    for (name, scope) in [("release-notes", "claude"), ("triage", "codex")] {
+    // Two of the owner's and one of somebody else's: the mount list
+    // carries the owner's whole registry because the daemon mounts the
+    // same set into every harness's skills directory.
+    for name in ["release-notes", "triage"] {
         client
-            .post(&upload_path(name, scope))
+            .post(&upload_path(name))
             .bearer(&owner_token)
             .body(BUNDLE)
             .send()
@@ -299,7 +305,7 @@ async fn a_sessions_daemon_sees_exactly_its_owners_skills(
             .assert_status(201);
     }
     client
-        .post(&upload_path("not-yours", "claude"))
+        .post(&upload_path("not-yours"))
         .bearer(&stranger_token)
         .body(BUNDLE)
         .send()
@@ -316,11 +322,6 @@ async fn a_sessions_daemon_sees_exactly_its_owners_skills(
     let mut names: Vec<&str> = mounts.iter().map(|mount| mount.name.as_str()).collect();
     names.sort_unstable();
     assert_eq!(names, ["release-notes", "triage"]);
-    assert_eq!(
-        mounts.iter().map(|mount| mount.scope).collect::<Vec<_>>(),
-        [SkillScope::Claude, SkillScope::Codex],
-        "ordered by name"
-    );
     assert!(
         mounts
             .iter()
@@ -372,7 +373,7 @@ async fn a_daemon_cannot_read_another_users_bundle(
     let client = ctx.client(router);
 
     let theirs: SkillView = client
-        .post(&upload_path("private", "claude"))
+        .post(&upload_path("private"))
         .bearer(&owner_token)
         .body(BUNDLE)
         .send()

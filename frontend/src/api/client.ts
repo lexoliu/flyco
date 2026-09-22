@@ -41,7 +41,6 @@ export type CatalogMcpServer = Schemas["CatalogMcpServer"];
 export type McpCatalogPage = Schemas["McpCatalogPage"];
 export type McpServerConfig = Schemas["McpServerConfig"];
 export type SkillView = Schemas["SkillView"];
-export type SkillScope = Schemas["SkillScope"];
 export type MarketplaceView = Schemas["MarketplaceView"];
 export type CatalogSkill = Schemas["CatalogSkill"];
 export type SkillCatalog = Schemas["SkillCatalog"];
@@ -678,11 +677,10 @@ export function listSkills(): Promise<
 
 export function uploadSkill(
   name: string,
-  scope: SkillScope,
   bundle: Blob,
 ): Promise<JsonResponse<"flyco_api::skills::upload_skill", 201>> {
   return requestJson("POST", "/v1/skills", {
-    query: { name, scope },
+    query: { name },
     octetStream: bundle,
   });
 }

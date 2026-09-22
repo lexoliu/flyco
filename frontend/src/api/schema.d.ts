@@ -226,8 +226,8 @@ export interface paths {
         get: operations["flyco_api::skill_catalog::list_catalog_skills"];
         put?: never;
         /**
-         * Installs one catalog skill, once per harness the caller chose.
-         * @description Installs one catalog skill, once per harness the caller chose.
+         * Installs one catalog skill.
+         * @description Installs one catalog skill.
          */
         post: operations["flyco_api::skill_catalog::install_catalog_skill"];
         delete?: never;
@@ -2983,8 +2983,8 @@ export interface paths {
         get: operations["flyco_api::skills::list_skills"];
         put?: never;
         /**
-         * Uploads a skill bundle, replacing any bundle of the same name and scope.
-         * @description Uploads a skill bundle, replacing any bundle of the same name and scope.
+         * Uploads a skill bundle, replacing any bundle of the same name.
+         * @description Uploads a skill bundle, replacing any bundle of the same name.
          */
         post: operations["flyco_api::skills::upload_skill"];
         delete?: never;
@@ -5006,11 +5006,6 @@ export interface components {
              *     name alone does not say which directory to copy.
              */
             plugin: string;
-            /**
-             * @description Which harnesses get it. Empty is a request that installs nothing and
-             *     is refused.
-             */
-            scopes: components["schemas"]["SkillScope"][];
         };
         /**
          * @description Why a session lost the machine it was running on.
@@ -6536,11 +6531,6 @@ export interface components {
             skills: components["schemas"]["CatalogSkill"][];
         };
         /**
-         * @description Which harness's global skills directory a bundle belongs in.
-         * @enum {string}
-         */
-        SkillScope: "claude" | "codex";
-        /**
          * @description One row of `GET /v1/skills`, and the response of `GET /v1/skills/{id}`.
          *
          *     The bundle itself is not part of this: a skill zip is object-storage
@@ -6551,8 +6541,6 @@ export interface components {
             id: components["schemas"]["Uuid"];
             /** @description Directory name the bundle is installed under. */
             name: string;
-            /** @description Which harness gets it. */
-            scope: components["schemas"]["SkillScope"];
             /**
              * Format: int64
              * @description Size of the stored zip in bytes.
@@ -6781,11 +6769,6 @@ export interface components {
         UploadSkill: {
             /** @description Directory name the bundle is installed under. */
             name: string;
-            /**
-             * @description Which harness's skills directory it belongs in. Claude Code and Codex
-             *     read different ones, so this is not derivable from the bundle.
-             */
-            scope: components["schemas"]["SkillScope"];
         };
         /**
          * @description Request body of `POST /v1/mcp-servers` and `PATCH /v1/mcp-servers/{id}`.
@@ -7520,11 +7503,6 @@ export interface operations {
                      *     name alone does not say which directory to copy.
                      */
                     plugin: string;
-                    /**
-                     * @description Which harnesses get it. Empty is a request that installs nothing and
-                     *     is refused.
-                     */
-                    scopes: components["schemas"]["SkillScope"][];
                 };
             };
         };
@@ -7540,8 +7518,6 @@ export interface operations {
                         id: components["schemas"]["Uuid"];
                         /** @description Directory name the bundle is installed under. */
                         name: string;
-                        /** @description Which harness gets it. */
-                        scope: components["schemas"]["SkillScope"];
                         /**
                          * Format: int64
                          * @description Size of the stored zip in bytes.
@@ -7552,7 +7528,7 @@ export interface operations {
                          * @description When it was last uploaded, seconds since the Unix epoch.
                          */
                         uploaded_at_unix: number;
-                    }[];
+                    };
                 };
             };
         };
@@ -11807,8 +11783,6 @@ export interface operations {
                         id: components["schemas"]["Uuid"];
                         /** @description Directory name the bundle is installed under. */
                         name: string;
-                        /** @description Which harness gets it. */
-                        scope: components["schemas"]["SkillScope"];
                         /**
                          * Format: int64
                          * @description Size of the stored zip in bytes.
@@ -12287,8 +12261,6 @@ export interface operations {
                         id: components["schemas"]["Uuid"];
                         /** @description Directory name the bundle is installed under. */
                         name: string;
-                        /** @description Which harness gets it. */
-                        scope: components["schemas"]["SkillScope"];
                         /**
                          * Format: int64
                          * @description Size of the stored zip in bytes.
@@ -12308,7 +12280,6 @@ export interface operations {
         parameters: {
             query: {
                 name: string;
-                scope: components["schemas"]["SkillScope"];
             };
             header?: never;
             path?: never;
@@ -12332,8 +12303,6 @@ export interface operations {
                         id: components["schemas"]["Uuid"];
                         /** @description Directory name the bundle is installed under. */
                         name: string;
-                        /** @description Which harness gets it. */
-                        scope: components["schemas"]["SkillScope"];
                         /**
                          * Format: int64
                          * @description Size of the stored zip in bytes.
@@ -12371,8 +12340,6 @@ export interface operations {
                         id: components["schemas"]["Uuid"];
                         /** @description Directory name the bundle is installed under. */
                         name: string;
-                        /** @description Which harness gets it. */
-                        scope: components["schemas"]["SkillScope"];
                         /**
                          * Format: int64
                          * @description Size of the stored zip in bytes.

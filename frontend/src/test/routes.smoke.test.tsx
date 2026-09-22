@@ -1076,13 +1076,16 @@ describe("route smoke tests", () => {
   });
 
   it("renders /settings/tools with the skill drop zone", async () => {
-    const { findByRole, getByRole } = renderAt("/settings/tools");
+    const { findByRole, getByRole, queryByRole } = renderAt("/settings/tools");
     expect(
       await findByRole("heading", { level: 2, name: "Tools" }),
     ).toBeInTheDocument();
+    expect(getByRole("button", { name: "Choose a file" })).toBeInTheDocument();
+    // A skill belongs to the user, so the page asks nothing about which
+    // agent gets it.
     expect(
-      getByRole("group", { name: "Which harness gets the skill" }),
-    ).toBeInTheDocument();
+      queryByRole("group", { name: "Which harness gets the skill" }),
+    ).not.toBeInTheDocument();
   });
 
   it("renders /settings/tools/mcp-catalog with the registry's servers", async () => {
@@ -1105,6 +1108,31 @@ describe("route smoke tests", () => {
     // removed, so the row carries no Remove button.
     expect(await findByRole("list", { name: "Marketplaces" })).toBeInTheDocument();
     expect(getByRole("link", { name: "Back to Tools" })).toHaveAttribute("href", "/settings/tools");
+  });
+
+  it("installs a catalog skill on one click, posting no scope", async () => {
+    let posted: unknown;
+    const base = vi.mocked(fetch).getMockImplementation();
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = new URL(String(input instanceof Request ? input.url : input));
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (method === "POST" && url.pathname === "/v1/catalog/skills") {
+        posted = JSON.parse(String(init?.body));
+      }
+      return base?.(input, init) ?? Promise.reject(new Error("no fixture"));
+    });
+
+    const { findByRole } = renderAt("/settings/tools/skill-catalog");
+    fireEvent.click(await findByRole("button", { name: /xlsx/ }));
+
+    // The click is the whole install — one POST naming the skill, with no
+    // harness to choose, and the picker leaves for the Tools page.
+    expect(await findByRole("heading", { level: 2, name: "Tools" })).toBeInTheDocument();
+    expect(posted).toEqual({
+      marketplace: "anthropics/skills",
+      plugin: "document-skills",
+      name: "xlsx",
+    });
   });
 
   it("renders /settings/instructions with the AGENTS.md editor", async () => {

@@ -5,10 +5,9 @@
  * plugin marketplace: a GitHub repository flyco reads. `anthropics/skills`
  * is there for everybody and the user may add any other repository.
  *
- * Two pages, one question each: which skill, then which harness gets it.
- * The second question has an answer already chosen — both harnesses — so
- * the page is a confirmation for anyone who does not care which, and a
- * choice for anyone who does.
+ * Picking a row is the whole of the install: a skill belongs to the user,
+ * so there is nothing to answer about it — flyco mounts it into every
+ * harness's skills directory — and the click is the install.
  *
  * A marketplace flyco has not read yet says so rather than reading as
  * empty: the control plane reads one on a queue, and "still being read"
@@ -29,50 +28,44 @@ import {
   listMarketplaces,
   type CatalogSkill,
   type MarketplaceView,
-  type SkillScope,
 } from "../../api/client";
 import styles from "./Settings.module.css";
 
 /** Where the flow starts from and returns to. */
 const TOOLS = "/settings/tools";
 
-const SCOPE_LABEL: Record<SkillScope, string> = {
-  claude: "Claude Code",
-  codex: "Codex",
-};
-
-/** Both harnesses, which is what a skill is installed for unless told otherwise. */
-const EVERY_SCOPE: readonly SkillScope[] = ["claude", "codex"];
-
-type Step = { readonly page: "pick" } | { readonly page: "scope"; readonly skill: CatalogSkill };
-
 export default function SkillCatalog() {
-  const navigate = useNavigate();
-  const [step, setStep] = createSignal<Step>({ page: "pick" });
-
   return (
     <section class={styles.section}>
-      <Show when={step().page === "pick"}>
-        <PickPage onChoose={(skill) => setStep({ page: "scope", skill })} />
-      </Show>
-      <Show when={step().page === "scope" ? step() : null}>
-        {(current) => (
-          <ScopePage
-            skill={(current() as Extract<Step, { page: "scope" }>).skill}
-            onBack={() => setStep({ page: "pick" })}
-            onInstalled={() => navigate(TOOLS)}
-          />
-        )}
-      </Show>
+      <PickPage />
     </section>
   );
 }
 
-/* ── Page 1: which skill ──────────────────────────────────────────────── */
+/* ── Which skill — and the click is the install ───────────────────────── */
 
-function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
+function PickPage() {
+  const navigate = useNavigate();
   const [catalog, { refetch }] = createQuery(listCatalogSkills);
   const [query, setQuery] = createSignal("");
+  const [installing, setInstalling] = createSignal<string | null>(null);
+  const [failure, setFailure] = createSignal<unknown>(null);
+
+  async function install(skill: CatalogSkill): Promise<void> {
+    setInstalling(skill.name);
+    setFailure(null);
+    try {
+      await installCatalogSkill({
+        marketplace: skill.marketplace,
+        plugin: skill.plugin,
+        name: skill.name,
+      });
+      navigate(TOOLS);
+    } catch (error) {
+      setFailure(error);
+      setInstalling(null);
+    }
+  }
 
   const matches = createMemo(() => {
     const wanted = query().trim().toLowerCase();
@@ -122,7 +115,7 @@ function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
       />
 
       <ProblemNotice
-        error={catalog.error}
+        error={catalog.error ?? failure()}
         action={{ label: "Retry", onClick: () => void refetch() }}
       />
 
@@ -155,10 +148,17 @@ function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
               <For each={skills}>
                 {(skill) => (
                   <li>
-                    <button type="button" class={styles.row} onClick={() => props.onChoose(skill)}>
+                    <button
+                      type="button"
+                      class={styles.row}
+                      disabled={installing() !== null}
+                      onClick={() => void install(skill)}
+                    >
                       <span class={styles.rowBody}>
                         <span class={styles.rowTitle}>{skill.name}</span>
-                        <span class={styles.rowMeta}>{skill.description}</span>
+                        <span class={styles.rowMeta}>
+                          {installing() === skill.name ? "Adding…" : skill.description}
+                        </span>
                       </span>
                     </button>
                   </li>
@@ -185,92 +185,6 @@ function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
       </Show>
 
       <Marketplaces onChanged={() => void refetch()} />
-    </>
-  );
-}
-
-/* ── Page 2: which harness ────────────────────────────────────────────── */
-
-function ScopePage(props: {
-  skill: CatalogSkill;
-  onBack: () => void;
-  onInstalled: () => void;
-}) {
-  const [scopes, setScopes] = createSignal<SkillScope[]>([...EVERY_SCOPE]);
-  const [busy, setBusy] = createSignal(false);
-  const [failure, setFailure] = createSignal<unknown>(null);
-
-  function toggle(scope: SkillScope): void {
-    setScopes((chosen) =>
-      chosen.includes(scope) ? chosen.filter((known) => known !== scope) : [...chosen, scope],
-    );
-  }
-
-  async function install(): Promise<void> {
-    setBusy(true);
-    setFailure(null);
-    try {
-      await installCatalogSkill({
-        marketplace: props.skill.marketplace,
-        plugin: props.skill.plugin,
-        name: props.skill.name,
-        scopes: scopes(),
-      });
-      props.onInstalled();
-    } catch (error) {
-      setFailure(error);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <>
-      <header class={styles.sectionHead}>
-        <button type="button" class={cx(styles.backLink, styles.backButton)} onClick={props.onBack}>
-          <ArrowLeft size={14} aria-hidden="true" />
-          Back
-        </button>
-        <h2>{props.skill.name}</h2>
-        <p class={styles.lede}>{props.skill.description}</p>
-      </header>
-
-      <div class={styles.field}>
-        <span class={styles.fieldLabel} id="skill-scope-label">
-          Which agents get it
-        </span>
-        <div class={styles.segmentedInline} role="group" aria-labelledby="skill-scope-label">
-          <For each={EVERY_SCOPE}>
-            {(scope) => (
-              <button
-                type="button"
-                class={cx(styles.segment, scopes().includes(scope) && styles.segmentOn)}
-                aria-pressed={scopes().includes(scope)}
-                onClick={() => toggle(scope)}
-              >
-                {SCOPE_LABEL[scope]}
-              </button>
-            )}
-          </For>
-        </div>
-        <p class={styles.hint}>
-          The two read their skills from different directories, so a skill is installed for each one
-          you pick.
-        </p>
-      </div>
-
-      <ProblemNotice error={failure()} />
-      <div class={styles.formActions}>
-        <button
-          type="button"
-          class={styles.pillPrimary}
-          disabled={busy() || scopes().length === 0}
-          title={scopes().length === 0 ? "Pick at least one agent" : undefined}
-          onClick={() => void install()}
-        >
-          {busy() ? "Adding…" : "Add skill"}
-        </button>
-      </div>
     </>
   );
 }
