@@ -14,11 +14,12 @@
  * empty: the control plane reads one on a queue, and "still being read"
  * and "offers nothing" are different answers.
  */
-import { For, Show, createMemo, createSignal } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { ArrowLeft, Plus, Trash2 } from "lucide-solid";
 import SearchField from "../../components/SearchField";
 import ProblemNotice from "../../components/ProblemNotice";
+import Skeleton from "../../components/Skeleton";
 import { createQuery } from "../../lib/query";
 import { cx } from "../../lib/cx";
 import {
@@ -70,9 +71,44 @@ export default function SkillCatalog() {
 
 /* ── Page 1: which skill ──────────────────────────────────────────────── */
 
+/**
+ * How often the page asks again while a marketplace is still being read,
+ * and how long it keeps asking.
+ *
+ * The control plane reads a marketplace on its queue, so the answer
+ * arrives without the user doing anything — but it arrives to the server,
+ * and this page has to look. Three seconds is slower than the floor the
+ * control plane's budget rules set (AGENTS.md: never under two), and the
+ * deadline is what stops it: a read that has not finished in two minutes
+ * is not going to finish while this page waits, and the page says so
+ * rather than asking for ever.
+ */
+const PENDING_POLL_MS = 3000;
+const PENDING_DEADLINE_MS = 120_000;
+
 function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
   const [catalog, { refetch }] = createQuery(listCatalogSkills);
   const [query, setQuery] = createSignal("");
+  const [gaveUp, setGaveUp] = createSignal(false);
+
+  // A pending marketplace is work already running on the control plane's
+  // queue; the page follows it by itself rather than handing the user a
+  // button to press, which is a button whose only effect is load.
+  createEffect(() => {
+    if ((catalog()?.pending ?? []).length === 0) {
+      return;
+    }
+    const until = Date.now() + PENDING_DEADLINE_MS;
+    const timer = setInterval(() => {
+      if (Date.now() >= until) {
+        clearInterval(timer);
+        setGaveUp(true);
+        return;
+      }
+      void refetch();
+    }, PENDING_POLL_MS);
+    onCleanup(() => clearInterval(timer));
+  });
 
   const matches = createMemo(() => {
     const wanted = query().trim().toLowerCase();
@@ -132,15 +168,18 @@ function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
 
       <Show when={(catalog()?.pending ?? []).length > 0}>
         <p class={styles.note}>
-          Reading {(catalog()?.pending ?? []).join(", ")}… this takes a few seconds the first time.
-          <button type="button" class={styles.linkButton} onClick={() => void refetch()}>
-            Check again
-          </button>
+          <Show
+            when={gaveUp()}
+            fallback={`Reading ${(catalog()?.pending ?? []).join(", ")}…`}
+          >
+            {(catalog()?.pending ?? []).join(", ")} is taking longer than it should. Open this
+            page again later.
+          </Show>
         </p>
       </Show>
 
-      <Show when={catalog.loading && catalog() === undefined}>
-        <p class={styles.note}>Reading your marketplaces…</p>
+      <Show when={catalog.latest === undefined && catalog.error === undefined}>
+        <Skeleton lines={6} />
       </Show>
 
       <For each={groups()}>

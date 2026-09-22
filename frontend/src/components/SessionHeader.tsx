@@ -35,8 +35,7 @@ import { listRepos, type MachineView, type SessionDetail } from "../api/client";
 import type { ConnectionState } from "../api/relay";
 import { createQuery } from "../lib/query";
 import { cx } from "../lib/cx";
-import { MACHINE_STATE_LABEL } from "../lib/machines";
-import { PROVIDER_LABEL } from "../lib/providers";
+import { relativeTime } from "../lib/relativeTime";
 import styles from "./SessionHeader.module.css";
 
 /**
@@ -311,11 +310,15 @@ export default function SessionHeader(props: SessionHeaderProps) {
                   {copied() ? "Copied session id" : "Copy session id"}
                 </button>
               </li>
-              <Show when={props.machine}>
-                {(machine) => (
+              {/*
+                The machine is already named on the composer's own chip,
+                so the foot of this menu carries the one fact nothing else
+                on the page states: when the session was last touched.
+              */}
+              <Show when={props.session}>
+                {(session) => (
                   <li class={styles.menuFooter}>
-                    {PROVIDER_LABEL[machine().spec.provider]} · {machine().region} ·{" "}
-                    {MACHINE_STATE_LABEL[machine().state]}
+                    Last active {relativeTime(session().last_active_unix, Date.now())}
                   </li>
                 )}
               </Show>

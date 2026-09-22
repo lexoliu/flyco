@@ -293,18 +293,25 @@ export default function ComputeCard(props: ComputeCardProps) {
         </Show>
       </Fact>
 
-      <Fact label="Spot capacity">
-        <span class={styles.toggleCell}>
-          <Toggle
-            label={`Use spot capacity on ${props.account.label}`}
-            checked={props.spot}
-            onChange={props.onSpot}
-          />
-          <span class={styles.dim}>
-            {props.spot ? "Cheaper; flyco handles eviction" : "Uninterruptible, and dearer"}
+      {/*
+        Only where the provider sells interruptible capacity. GitHub bills
+        a codespace one way, and hardware the user enrolled is already
+        theirs, so on those the toggle was a switch that repriced nothing.
+      */}
+      <Show when={SELLS_SPOT.has(props.account.kind)}>
+        <Fact label="Spot capacity">
+          <span class={styles.toggleCell}>
+            <Toggle
+              label={`Use spot capacity on ${props.account.label}`}
+              checked={props.spot}
+              onChange={props.onSpot}
+            />
+            <span class={styles.dim}>
+              {props.spot ? "Cheaper; flyco handles eviction" : "Uninterruptible, and dearer"}
+            </span>
           </span>
-        </span>
-      </Fact>
+        </Fact>
+      </Show>
 
       <Fact label="This billing period">
         <Show
@@ -385,6 +392,15 @@ export function YourHardware() {
  * about an account that *was* read, so it is stated as one; anything else is
  * a failure, and its own message is the most honest thing to show.
  */
+/**
+ * The providers that sell interruptible capacity at a lower price.
+ *
+ * GitHub bills a codespace at one rate, and a machine the user enrolled is
+ * already theirs; a spot toggle on either is a switch with nothing behind
+ * it.
+ */
+const SELLS_SPOT: ReadonlySet<CloudProviderKind> = new Set(["azure", "aws", "gcp"]);
+
 function machineAbsence(error: unknown, kind: CloudProviderKind): string {
   if (catalogNotReady(error)) {
     return readingMachines([kind]);

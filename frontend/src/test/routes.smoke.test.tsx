@@ -17,6 +17,8 @@ import ConnectReturn from "../routes/connect/Return";
 import SessionDetail from "../routes/SessionDetail";
 import SettingsLayout from "../routes/settings/SettingsLayout";
 import AgentsSection from "../routes/settings/AgentsSection";
+import ApiKeysSection from "../routes/settings/ApiKeysSection";
+import PreferencesSection from "../routes/settings/PreferencesSection";
 import ComputeSection from "../routes/settings/ComputeSection";
 import ToolsSection from "../routes/settings/ToolsSection";
 import McpCatalog from "../routes/settings/McpCatalog";
@@ -73,6 +75,8 @@ function renderAt(url: string, signedIn = true, seenWelcome = true) {
         <Route path="/tools/mcp-catalog" component={McpCatalog} />
         <Route path="/tools/skill-catalog" component={SkillCatalog} />
         <Route path="/instructions" component={InstructionsSection} />
+        <Route path="/api-keys" component={ApiKeysSection} />
+        <Route path="/preferences" component={PreferencesSection} />
         <Route path="/account" component={AccountSection} />
       </Route>
       <Route path="*404" component={NotFound} />
@@ -1081,16 +1085,33 @@ describe("route smoke tests", () => {
     expect(await findByLabelText("AGENTS.md")).toBeInTheDocument();
   });
 
-  it("renders /settings/account, handling an unconfigured VAPID key calmly", async () => {
-    const { findByRole, findByText, getByRole } = renderAt("/settings/account");
+  it("renders /settings/account as the identity and the way out", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/account");
     expect(
       await findByRole("heading", { level: 2, name: "Account" }),
     ).toBeInTheDocument();
-    expect(getByRole("group", { name: "Theme" })).toBeInTheDocument();
     expect(getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  });
+
+  it("renders /settings/preferences, handling an unconfigured VAPID key calmly", async () => {
+    const { findByRole, findByText, getByRole } = renderAt("/settings/preferences");
+    expect(
+      await findByRole("heading", { level: 2, name: "Preferences" }),
+    ).toBeInTheDocument();
+    expect(getByRole("group", { name: "Theme" })).toBeInTheDocument();
+    expect(getByRole("group", { name: "Interface size" })).toBeInTheDocument();
+    expect(getByRole("group", { name: "Transcript font" })).toBeInTheDocument();
     // Push is unavailable in jsdom and the VAPID key is unconfigured; the
     // card says so instead of offering a button that cannot work.
     expect(await findByText("Unsupported here")).toBeInTheDocument();
+  });
+
+  it("renders /settings/api-keys as its own section", async () => {
+    const { findByRole, getByRole } = renderAt("/settings/api-keys");
+    expect(
+      await findByRole("heading", { level: 2, name: "API keys" }),
+    ).toBeInTheDocument();
+    expect(getByRole("button", { name: /Create key/ })).toBeInTheDocument();
   });
 
   it("renders an unknown path as the 404 page", () => {
