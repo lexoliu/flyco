@@ -1,8 +1,12 @@
 /* The context ring's trigger and the usage panel it opens (docs/ux.md §9.3). */
 
+/* A chip's height, though it draws no chip: the composer's row is
+   bottom-aligned, so a trigger shorter than the pills beside it sat with
+   its ring and its reading below their text. */
 .trigger {
   display: inline-flex;
   align-items: center;
+  height: 28px;
   padding: 0;
   border: 0;
   background: none;

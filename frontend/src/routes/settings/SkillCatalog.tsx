@@ -108,10 +108,6 @@ function PickPage(props: { onChoose: (skill: CatalogSkill) => void }) {
           Back to Tools
         </A>
         <h2>Add a skill</h2>
-        <p class={styles.lede}>
-          Skills are folders of instructions an agent loads when it needs them. These come from
-          plugin marketplaces on GitHub; flyco copies the one you pick into every session.
-        </p>
       </header>
 
       <SearchField

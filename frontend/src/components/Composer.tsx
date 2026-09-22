@@ -354,9 +354,6 @@ export default function Composer(props: ComposerProps) {
       onSubmit={() => void send()}
       placeholder="Describe a task"
       label="Describe a task"
-      // ⌘/Ctrl+Enter sends; plain Enter is a newline, because a prompt is
-      // prose and prose has paragraphs.
-      submitOn="mod-enter"
       controls={
         <div class={styles.chips}>
           <HarnessChip
@@ -543,12 +540,10 @@ function ComputeChip(props: {
     if (entry === undefined) {
       return null;
     }
-    // Name and price: what decides whether to send. The logomark already
-    // names the provider; region, spot and account are one click away in
-    // the popover, and on the chip they were what pushed the row onto a
-    // second line. A container carries its size too, because `Container`
-    // alone names no machine — see `chipLabel`.
-    return chipLabel(entry, props.spot);
+    // Name and size: what the choice is about. The logomark names the
+    // provider; the price, the region, the account and the capacity mode
+    // are laid out in the panel one click away — see `chipLabel`.
+    return chipLabel(entry);
   });
 
   /** The sentence a license-bound machine has to show before send. */
@@ -606,10 +601,6 @@ function ComputeChip(props: {
             error={props.error}
             pending={props.pending ?? undefined}
             codespaceHint
-            // What `Auto` picks is the slider's own line, under its track.
-            // What is left for here is what choosing changes: who the
-            // session records as having decided, and that the agent is told.
-            note="Choosing a machine yourself is remembered with the session, and the agent is told you picked it."
           />
         )}
       </Popover>
@@ -687,7 +678,6 @@ function RepoChip(props: {
       {() => (
         <div class={styles.popover}>
           <Show when={props.repos.length > 0}>
-            <p class={styles.popoverTitle}>Selected — first is primary</p>
             <ul class={styles.options}>
               <For each={props.repos}>
                 {(entry, index) => (

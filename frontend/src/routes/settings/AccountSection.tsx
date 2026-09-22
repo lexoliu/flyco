@@ -45,10 +45,6 @@ export default function AccountSection() {
     <section class={styles.section}>
       <header class={styles.sectionHead}>
         <h2>Account</h2>
-        <p class={styles.lede}>
-          The GitHub identity flyco acts as, the credentials that can call it without a browser,
-          and how it reaches you.
-        </p>
       </header>
 
       <Identity />
@@ -263,10 +259,6 @@ function Notifications() {
           </span>
           <div class={styles.identity}>
             <span class={styles.cardTitle}>Push notifications</span>
-            <span class={styles.cardMeta}>
-              Flyco tells you when a session needs a decision, or when a turn finishes while it is
-              not open in a tab.
-            </span>
           </div>
           <div class={styles.actions}>
             <Show
@@ -317,7 +309,6 @@ function Appearance() {
         <div class={styles.cardTop}>
           <div class={styles.identity}>
             <span class={styles.cardTitle}>Theme</span>
-            <span class={styles.cardMeta}>Applies on this browser, immediately.</span>
           </div>
           <div class={styles.actions}>
             <div class={styles.segmented} role="group" aria-label="Theme">

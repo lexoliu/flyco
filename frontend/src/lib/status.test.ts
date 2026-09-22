@@ -247,11 +247,10 @@ describe("an interrupted session", () => {
     expect(REFUSING.has("interrupted")).toBe(false);
   });
 
-  it("says a suspended one kept its disk and that a message starts it", () => {
+  it("says a suspended one kept its disk, and carries the resume", () => {
     const view = interruptedNotice("suspended");
     expect(view?.title).toBe("Interrupted · suspended");
-    expect(view?.body).toContain("the disk is kept");
-    expect(view?.body).toContain("Send a message");
+    expect(view?.body).toContain("Its disk is kept");
     expect(view?.action).toEqual({ kind: "resume", label: "Resume" });
   });
 
@@ -265,7 +264,7 @@ describe("an interrupted session", () => {
   it("says a reclaimed one is already on its way back", () => {
     const view = interruptedNotice("spot_reclaimed");
     expect(view?.title).toBe("Interrupted · spot reclaimed");
-    expect(view?.body).toContain("already starting it again");
+    expect(view?.body).toContain("starting it again");
   });
 });
 

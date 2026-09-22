@@ -21,7 +21,7 @@ describe("ToolsSection", () => {
     // Inside a router: the section links to the catalog picker.
     const history = createMemoryHistory();
     history.set({ value: "/settings/tools", replace: true, scroll: false });
-    const { findByText, getByRole, getByText } = render(() => (
+    const { findByText, getByRole } = render(() => (
       <MemoryRouter history={history}>
         <Route path="/settings/tools" component={ToolsSection} />
       </MemoryRouter>
@@ -32,6 +32,6 @@ describe("ToolsSection", () => {
     expect(await findByText("the MCP registry is unreachable")).toBeInTheDocument();
     expect(getByRole("button", { name: "Add server" })).toBeInTheDocument();
     expect(await findByText("the skill store is unreachable")).toBeInTheDocument();
-    expect(getByText(/Skills are folders of instructions/)).toBeInTheDocument();
+    expect(getByRole("link", { name: /Add from a marketplace/ })).toBeInTheDocument();
   });
 });

@@ -37,7 +37,6 @@ describe("Composer", () => {
     ).toBeInTheDocument();
     // No branch picker anywhere: a branch is a fact about one repository,
     // and there is no repository yet to have one.
-    expect(queryByText("Selected — first is primary")).not.toBeInTheDocument();
     expect(queryByText("Default branch")).not.toBeInTheDocument();
   });
 

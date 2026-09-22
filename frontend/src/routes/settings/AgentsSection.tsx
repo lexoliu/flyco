@@ -17,10 +17,8 @@ import { createQuery } from "../../lib/query";
 import ConfirmDialog from "../../components/ConfirmDialog";
 import Logomark, { HARNESS_MARK } from "../../components/Logomark";
 import ProblemNotice from "../../components/ProblemNotice";
-import Disclosure from "../../components/Disclosure";
 import HarnessUsage from "../../components/HarnessUsage";
 import { useReadiness } from "../../components/Readiness";
-import HarnessMatrix from "./HarnessMatrix";
 import {
   listLlmUsage,
   unlinkHarnessAccount,
@@ -102,10 +100,6 @@ export default function AgentsSection() {
     <section class={styles.section}>
       <header class={styles.sectionHead}>
         <h2>Agents</h2>
-        <p class={styles.lede}>
-          Flyco runs the official Claude Code, Codex and Devin on your own account, so every token
-          is billed by your plan and never resold.
-        </p>
       </header>
 
       <ProblemNotice error={readiness.error() ?? usage.error} />
@@ -133,7 +127,6 @@ export default function AgentsSection() {
                   </span>
                   <div class={styles.identity}>
                     <span class={styles.cardTitle}>{harness.label}</span>
-                    <span class={styles.cardMeta}>{harness.runsOn}</span>
                   </div>
                   <div class={styles.actions}>
                     <span
@@ -143,9 +136,7 @@ export default function AgentsSection() {
                         soonest() !== null && styles.statusWarn,
                       )}
                     >
-                      {accounts().length === 0
-                        ? "Not linked"
-                        : (soonest()?.status ?? "Linked")}
+                      {accounts().length === 0 ? "Not linked" : "Linked"}
                     </span>
                   </div>
                 </div>
@@ -286,10 +277,6 @@ export default function AgentsSection() {
           }}
         </For>
       </div>
-
-      <Disclosure summary="What works on each harness">
-        <HarnessMatrix />
-      </Disclosure>
     </section>
   );
 }

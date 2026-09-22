@@ -8,9 +8,10 @@
  * session's token refresh with it. A date the reader has to subtract from
  * today is not a warning.
  *
- * So the distance is computed here and said in words. Within a week the
- * card stops reading `Linked`, and `Relink` — which was already on the
- * card, in the same weight as `Unlink` — becomes the thing to do.
+ * So the distance is computed here and said in words, once, in the line
+ * under the account: within a week it turns urgent, and `Relink` — which
+ * was already on the card, in the same weight as `Unlink` — becomes the
+ * thing to do.
  *
  * Pure: takes `now` rather than reading the clock, so a test can stand
  * anywhere relative to an expiry.
@@ -25,9 +26,13 @@ const DAY_SECONDS = 86_400;
 export interface CredentialExpiry {
   /** `gone` is already useless; `soon` will be within {@link SOON_DAYS}. */
   level: "fine" | "soon" | "gone";
-  /** What the card's pill says in place of `Linked`. */
-  status: string;
-  /** The line under the account name: `Expires tomorrow`. */
+  /**
+   * The line under the account name: `Expires tomorrow`.
+   *
+   * The card says this once. A pill above it reading `Expires soon` over a
+   * line reading `Expires tomorrow` was the same fact twice, and the
+   * vaguer of the two first.
+   */
   sentence: string;
 }
 
@@ -46,7 +51,6 @@ export function credentialExpiry(
   if (expiresAtUnix <= nowUnix) {
     return {
       level: "gone",
-      status: "Expired",
       sentence: `Expired ${formatDate(expiresAtUnix)}`,
     };
   }
@@ -56,13 +60,11 @@ export function credentialExpiry(
   if (days > SOON_DAYS) {
     return {
       level: "fine",
-      status: "Linked",
       sentence: `Expires ${formatDate(expiresAtUnix)}`,
     };
   }
   return {
     level: "soon",
-    status: "Expires soon",
     sentence: days === 1 ? "Expires tomorrow" : `Expires in ${days} days`,
   };
 }

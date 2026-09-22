@@ -166,10 +166,6 @@ function McpServers() {
               when={listed().length > 0}
               fallback={
                 <div class={styles.empty}>
-                  <p class={styles.emptyLine}>
-                    MCP servers give every session extra tools, such as a database, a browser or
-                    documentation.
-                  </p>
                   {/* The catalog is the primary: a browser-only user picks a
                       server from a list; typing a transport by hand is the
                       way in for one the registry does not list. */}
@@ -236,17 +232,7 @@ function Skills() {
       <p class={styles.groupLabel}>Skills</p>
       <ProblemNotice error={skills.error ?? error()} />
 
-      <Show
-        when={uploaded().length > 0}
-        fallback={
-          /* The marketplace is the action; the sentence before it says what
-             a skill is, which a first visit has no other way to learn. */
-          <p class={styles.lede}>
-            Skills are folders of instructions an agent can load. Pick one from a marketplace, or
-            upload your own as a .zip.
-          </p>
-        }
-      >
+      <Show when={uploaded().length > 0}>
         <div class={cx(styles.cards, styles.cardsPaired)}>
           <For each={uploaded()}>
             {(skill) => <SkillCard skill={skill} onRemove={() => void remove(skill.id)} />}

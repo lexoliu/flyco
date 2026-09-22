@@ -4,6 +4,20 @@
   gap: var(--space-3);
 }
 
+/* What the money is for, said once as a heading with its mark: the
+   machine, not the model's tokens, which the user's own plan bills. */
+.heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+}
+
 .sliderRow {
   display: flex;
   align-items: baseline;

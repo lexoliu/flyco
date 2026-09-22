@@ -378,9 +378,9 @@
   white-space: nowrap;
 }
 
-/* One picked repository in the repo chip's `Selected` block: slug, its own
-   branch picker, and the small actions. Not an `.option` — the row is a
-   readout with controls, not a button. */
+/* One picked repository at the head of the repo chip's panel: slug, its
+   own branch picker, and the small actions. Not an `.option` — the row is
+   a readout with controls, not a button. */
 .pickedRow {
   display: flex;
   align-items: center;

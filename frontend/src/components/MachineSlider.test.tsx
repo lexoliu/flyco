@@ -196,18 +196,16 @@ function mountControlled(
 }
 
 describe("MachineSlider", () => {
-  it("opens on Auto, and says what Auto picked and the rule it picked by", () => {
+  it("opens on Auto, and says which machine it picked and what it costs", () => {
     const { getByRole, getByText, queryByLabelText } = mount([SMALL, LARGE], null);
 
     const auto = getByRole("radio", { name: "Auto" });
     expect(auto).toHaveAttribute("aria-checked", "true");
     // No track under Auto — the choice flyco keeps is the size as well as
-    // the form, so the panel owes the machine and the rule, not a slider.
+    // the form, so the panel owes the machine, not a slider.
     expect(queryByLabelText("Machine")).toBeNull();
-    expect(getByText("Standard_D4als_v6 · 4 vCPU / 16 GiB · $0.14/hr")).toBeInTheDocument();
-    expect(
-      getByText("The cheapest curated Linux type with at least 4 vCPU and 16 GiB."),
-    ).toBeInTheDocument();
+    expect(getByText("Standard_D4als_v6 · 4 vCPU / 16 GiB")).toBeInTheDocument();
+    expect(getByText("$0.14/hr")).toBeInTheDocument();
   });
 
   it("lists the forms the catalog offers, Auto first", () => {
@@ -235,14 +233,14 @@ describe("MachineSlider", () => {
     expect(getByText("2 codespaces")).toBeInTheDocument();
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
-      "standardLinux32gb · 4 vCPU / 16 GiB · $0.14/hr · Free this month",
+      "standardLinux32gb · 4 vCPU / 16 GiB",
     );
 
     getByRole("radio", { name: "VM" }).click();
     expect(getByLabelText("Machine")).toHaveAttribute("max", "0");
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
-      "Standard_D4als_v6 · 4 vCPU / 16 GiB · $0.14/hr",
+      "Standard_D4als_v6 · 4 vCPU / 16 GiB",
     );
   });
 
@@ -296,7 +294,7 @@ describe("MachineSlider", () => {
 
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
-      "Standard_D8als_v6 · 8 vCPU / 32 GiB · $0.27/hr",
+      "Standard_D8als_v6 · 8 vCPU / 32 GiB",
     );
   });
 
@@ -373,10 +371,8 @@ describe("MachineSlider", () => {
     const { getByRole, getByText } = mount([HOST], null, vi.fn(), HOST_AUTOMATIC);
 
     expect(getByRole("radio", { name: "Container" })).toBeInTheDocument();
-    expect(getByText("mercury · 16 vCPU / 64 GiB · your hardware")).toBeInTheDocument();
-    expect(
-      getByText("mercury — the machine you enrolled, which flyco meters no spend on."),
-    ).toBeInTheDocument();
+    expect(getByText("mercury · 16 vCPU / 64 GiB")).toBeInTheDocument();
+    expect(getByText("your hardware")).toBeInTheDocument();
   });
 
   it("prices a hand-picked host as the hardware it is", () => {
@@ -384,7 +380,7 @@ describe("MachineSlider", () => {
 
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
-      "mercury · 16 vCPU / 64 GiB · your hardware",
+      "mercury · 16 vCPU / 64 GiB",
     );
   });
 
@@ -404,13 +400,13 @@ describe("MachineSlider", () => {
   it("only offers spot where a detent can quote a spot price", () => {
     // Codespaces carry no spot price — under that form the toggle would
     // reprice nothing, so it is not on the panel to flip.
-    const { getByRole, getByText, queryByText } = mountControlled([SMALL, CODESPACE]);
+    const { getByRole, queryByRole } = mountControlled([SMALL, CODESPACE]);
 
     getByRole("radio", { name: "Codespace" }).click();
-    expect(queryByText(/Spot capacity/)).not.toBeInTheDocument();
+    expect(queryByRole("switch", { name: "Use spot capacity" })).not.toBeInTheDocument();
 
     getByRole("radio", { name: "VM" }).click();
-    expect(getByText(/Spot capacity/)).toBeInTheDocument();
+    expect(getByRole("switch", { name: "Use spot capacity" })).toBeInTheDocument();
   });
 });
 
@@ -452,7 +448,7 @@ describe("MachineSlider without an Auto segment", () => {
     expect(getByLabelText("Machine")).toHaveValue("1");
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
-      "Standard_D8als_v6 · 8 vCPU / 32 GiB · $0.27/hr",
+      "Standard_D8als_v6 · 8 vCPU / 32 GiB",
     );
   });
 
@@ -475,14 +471,14 @@ describe("MachineSlider without an Auto segment", () => {
   it("offers only the dimensions the caller can act on", () => {
     // A resize carries a machine type and nothing else, so account, region
     // and capacity mode are not on the panel to be changed.
-    const { getByText, queryByText } = mountFixed([SMALL, LARGE], SMALL_KEY);
+    const { getByText, queryByRole, queryByText } = mountFixed([SMALL, LARGE], SMALL_KEY);
     getByText("Advanced").click();
 
     expect(getByText("Operating system")).toBeInTheDocument();
     expect(getByText("Architecture")).toBeInTheDocument();
     expect(queryByText("Account")).not.toBeInTheDocument();
     expect(queryByText("Region")).not.toBeInTheDocument();
-    expect(queryByText(/Spot capacity/)).not.toBeInTheDocument();
+    expect(queryByRole("switch", { name: "Use spot capacity" })).not.toBeInTheDocument();
   });
 
   it("still warns about a license-bound machine before it is committed to", () => {
@@ -506,7 +502,7 @@ describe("MachineSlider on a container", () => {
 
     expect(getByLabelText("Machine")).toHaveAttribute(
       "aria-valuetext",
-      "Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month",
+      "Container · 4 vCPU · 8 GiB",
     );
   });
 

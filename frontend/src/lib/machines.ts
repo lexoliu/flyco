@@ -224,31 +224,33 @@ export function hasFreeGrant(entry: MachineCatalogEntry | undefined): boolean {
  * `Standard_D4s_v6 · 4 vCPU / 16 GiB · $0.19/hr`, and for a container
  * `Container · 4 vCPU · 8 GiB · $0.21/hr · Free this month`.
  */
-export function detentLabel(entry: MachineCatalogEntry, spot: boolean): string {
+export function detentLabel(entry: MachineCatalogEntry): string {
   const size = namesItself(entry.provider, runtimeOf(entry))
     ? [capacityLabel(entry)].filter((part) => part !== null)
     : capacityParts(entry);
-  return [entryName(entry), ...size, hourlyLabel(entry, spot), ...grantParts(entry)].join(" · ");
+  return [entryName(entry), ...size].join(" · ");
 }
 
-/** ` · Free this month`, on the entries that earn it and nothing else. */
-function grantParts(entry: MachineCatalogEntry): string[] {
-  return hasFreeGrant(entry) ? [FREE_GRANT_LABEL] : [];
+/**
+ * What a machine costs to run, for the line under its name.
+ *
+ * The grant rather than the rate where the provider covers the machine
+ * this month: a price nobody is paying is not the number to read.
+ */
+export function priceLabel(entry: MachineCatalogEntry, spot: boolean): string {
+  return hasFreeGrant(entry) ? FREE_GRANT_LABEL : hourlyLabel(entry, spot);
 }
 
 /**
  * The same entry, sized for the composer's compute chip.
  *
- * A VM drops its size — the type name is what the user picked, and this is
- * the chip that gives way when the row runs out of room. A container keeps
- * it, because `Container · $0.21/hr` would be a chip that says nothing
- * about the machine it names.
+ * What a machine is chosen for is its size, so the closed chip carries the
+ * name and the cores and memory and nothing else: the price and the
+ * monthly grant are facts about the machine, not about the choice, and
+ * they are laid out in the panel that opens.
  */
-export function chipLabel(entry: MachineCatalogEntry, spot: boolean): string {
-  const size = namesItself(entry.provider, runtimeOf(entry)) ? [] : capacityParts(entry);
-  return [entryChipName(entry), ...size, hourlyLabel(entry, spot), ...grantParts(entry)].join(
-    " · ",
-  );
+export function chipLabel(entry: MachineCatalogEntry): string {
+  return [entryChipName(entry), ...capacityParts(entry)].join(" · ");
 }
 
 /**
@@ -282,32 +284,6 @@ export function billingMinimumSentence(entry: MachineCatalogEntry): string | nul
 /** Whether an entry is hardware the user already owns and already pays for. */
 export function isUserOwned(entry: MachineCatalogEntry | undefined): boolean {
   return entry?.pricing.kind === "user_owned";
-}
-
-/**
- * What the leftmost detent picked, in one sentence.
- *
- * The rule docs/ux.md §7.7 states — the cheapest curated Linux type with at
- * least 4 vCPU and 16 GiB — describes a choice made across prices. A machine
- * the user enrolled has no price to be cheapest at, so when that is what
- * `Auto` resolved to the sentence names the machine rather than quoting a
- * rule that did not decide anything.
- *
- * A container the provider covers out of a monthly grant wins over both,
- * because that allowance expires unspent at the end of the month and the
- * machine at home does not — so the sentence names the grant rather than a
- * price nobody is paying.
- *
- * It follows the word `Auto` where the slider speaks it, so it opens as a
- * sentence of its own rather than as a clause.
- */
-export function autoSentence(entry: MachineCatalogEntry | undefined): string {
-  if (entry !== undefined && hasFreeGrant(entry)) {
-    return "A container your provider gives away this month, which flyco spends before it spends money.";
-  }
-  return isUserOwned(entry) && entry !== undefined
-    ? `${entry.machine_type} — the machine you enrolled, which flyco meters no spend on.`
-    : "The cheapest curated Linux type with at least 4 vCPU and 16 GiB.";
 }
 
 /** How an architecture is written where a person reads it. */

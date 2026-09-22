@@ -19,7 +19,7 @@ import Popover from "./Popover";
 import Ring from "./Ring";
 import { cx } from "../lib/cx";
 import type { ContextCost, ContextUsage, ContextWindow, UsageWindow } from "../api/wire";
-import { resetHint, windowTier } from "../lib/planUsage";
+import { orderedWindows, resetHint, windowTier } from "../lib/planUsage";
 import { tokens } from "../lib/tokens";
 import { formatDuration } from "../lib/duration";
 import { formatUsd } from "../lib/money";
@@ -382,14 +382,15 @@ export default function ContextRing(props: ContextRingProps) {
                 <p class={styles.note}>No plan limits reported</p>
               }
             >
-              <For each={props.windows}>
+              <For each={orderedWindows(props.windows)}>
                 {(window) => {
                   const hint = resetHint(window, props.now);
                   return (
                     <div class={styles.windowRow}>
                       <p class={styles.windowLabel}>{window.label}</p>
                       <p class={styles.windowReadout}>
-                        <Show when={hint !== undefined}>{hint}</Show> {window.used_percent}%
+                        {window.used_percent}%
+                        <Show when={hint !== undefined}> · {hint}</Show>
                       </p>
                       <div
                         class={styles.track}

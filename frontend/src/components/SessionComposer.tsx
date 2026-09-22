@@ -403,7 +403,6 @@ export default function SessionComposer(props: SessionComposerProps) {
       onSubmit={send}
       placeholder="Reply, / for a command, ! for the shell"
       label="Message the agent"
-      submitOn="enter"
       controls={props.controls}
       trailing={props.trailing}
       onKeyDown={onKeyDown}

@@ -42,25 +42,24 @@
   opacity: 0;
 }
 
-.thumbTravel {
-  position: absolute;
-  inset: 0;
-  transform: translateX(var(--travelled));
-  transition: transform var(--transition-fast);
-  pointer-events: none;
-}
-
+/* The mark rides the rail on `left`, not on a translated full-width box:
+   a box the width of the rail shifted `translateX(100%)` sits a whole rail
+   beyond its right edge, and a panel that scrolls in one axis scrolls in
+   both — so every step to the right grew the popover's horizontal scroll
+   by the width of the rail. A point offset overflows nothing. */
 .thumb {
   position: absolute;
   top: 50%;
-  left: 0;
+  left: var(--travelled, 0%);
   width: var(--thumb, 20px);
   height: var(--thumb, 20px);
   translate: -50% -50%;
   border-radius: var(--radius-full);
   background: var(--color-primary);
   box-shadow: var(--shadow-sm);
-  transition: scale var(--transition-fast);
+  transition:
+    left var(--transition-fast),
+    scale var(--transition-fast);
 }
 
 /* The input is the control; the rail above is what it looks like. It is
@@ -102,4 +101,10 @@
 
 .rail:has(.range:active) .thumb {
   scale: 0.92;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .thumb {
+    transition: none;
+  }
 }
