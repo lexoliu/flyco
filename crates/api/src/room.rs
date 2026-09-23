@@ -1159,12 +1159,13 @@ async fn put_latest<T: Serialize + Sync>(
 
 /// The schema this build expects.
 ///
-/// `user_version` is the durable answer to "is the schema already there":
-/// checking it costs one storage read where running every `CREATE` blind
-/// costs one per statement — and every hot path in the room (each event
-/// append, each page read, each attach) calls `ensure_schema` first. Bump
-/// it when the DDL below changes so a room built by an older build
-/// upgrades once, on its next call.
+/// The durable answer to "is the schema already there" lives in the
+/// `schema_meta` table [`crate::schema_version`] keeps — checking it
+/// costs one storage read where running every `CREATE` blind costs one
+/// per statement — and every hot path in the room (each event append,
+/// each page read, each attach) calls `ensure_schema` first. Bump it
+/// when the DDL below changes so a room built by an older build upgrades
+/// once, on its next call.
 const SCHEMA_VERSION: i64 = 2;
 
 /// Creates the room's tables if this is its first write.
@@ -1173,81 +1174,68 @@ const SCHEMA_VERSION: i64 = 2;
 /// have to be monotonic across the object being rebuilt around every
 /// event, and the database is the only thing here that guarantees it.
 async fn ensure_schema(db: &DurableDb) -> Result<(), DurableObjectError> {
-    let version: i64 = db
-        .query("PRAGMA user_version")
-        .fetch_scalar()
-        .await
-        .map_err(|error| stored(&error))?;
-    if version >= SCHEMA_VERSION {
-        return Ok(());
-    }
-    for statement in [
-        "CREATE TABLE IF NOT EXISTS events (\
-             seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
-             json    TEXT    NOT NULL, \
-             at_unix INTEGER NOT NULL)",
-        // Every command owed to the daemon, whether it is attached or
-        // not. The command stream is a cursor over this table; a row is
-        // deleted the moment the daemon acknowledges past it, so the
-        // table is a delivery log rather than a transcript — what a
-        // command *was* is in `events` where it matters.
-        "CREATE TABLE IF NOT EXISTS daemon_commands (\
-             seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
-             json    TEXT    NOT NULL, \
-             at_unix INTEGER NOT NULL)",
-        // Exactly one row, because a room has exactly one daemon. The
-        // epoch names the current attach; `live_until` is the deadline its
-        // contact renews; `gone_reported` is what makes the first caller
-        // past that deadline the only one to announce it. The CHECK is
-        // what makes one row structural rather than a convention.
-        "CREATE TABLE IF NOT EXISTS daemon_presence (\
-             id            INTEGER PRIMARY KEY CHECK (id = 0), \
-             epoch         INTEGER NOT NULL, \
-             live_until    INTEGER NOT NULL, \
-             gone_reported INTEGER NOT NULL)",
-        // One row per attach, recording how far into that epoch's frame
-        // numbering the room has stored. A retransmitted batch is answered
-        // from this without reapplying a frame of it; a gap is refused.
-        "CREATE TABLE IF NOT EXISTS daemon_frames (\
-             epoch   INTEGER PRIMARY KEY, \
-             through INTEGER NOT NULL)",
-        // The size the client's terminal pane last reported, handed to
-        // every daemon's fresh command stream: a daemon that was still
-        // booting when the pane opened, or one restarted by a resize, has
-        // a PTY at its default size and no other way to learn the real
-        // one (issue #258). One row, because a session has one pane
-        // size — the last client to fit its pane wins.
-        "CREATE TABLE IF NOT EXISTS terminal_size (\
-             id   INTEGER PRIMARY KEY CHECK (id = 0), \
-             cols INTEGER NOT NULL, \
-             rows INTEGER NOT NULL)",
-        // One row per answered question about the checkout, keyed by the
-        // id the Worker minted for it and deleted the moment that Worker
-        // collects it. A table rather than KV because these expire: the
-        // sweep in `store_workdir_reply` needs to find rows by age, which
-        // is a query and not a key.
-        "CREATE TABLE IF NOT EXISTS workdir_replies (\
-             id      TEXT    PRIMARY KEY, \
-             json    TEXT    NOT NULL, \
-             at_unix INTEGER NOT NULL)",
-        // The TTL sweep in `store_workdir_reply` deletes by `at_unix`;
-        // without this index every store scans the whole table.
-        "CREATE INDEX IF NOT EXISTS workdir_replies_at ON workdir_replies (at_unix)",
-        // The room's row-read ledger — one row per UTC day, debited by
-        // `row_budget::charge_reads`, and the circuit breaker that keeps a
-        // runaway reader here from spending the account's quota.
-        crate::row_budget::SCHEMA,
-    ] {
-        db.query(statement)
-            .execute()
-            .await
-            .map_err(|error| stored(&error))?;
-    }
-    db.query(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))
-        .execute()
-        .await
-        .map_err(|error| stored(&error))?;
-    Ok(())
+    crate::schema_version::ensure(
+        db,
+        SCHEMA_VERSION,
+        &[
+            "CREATE TABLE IF NOT EXISTS events (\
+                 seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
+                 json    TEXT    NOT NULL, \
+                 at_unix INTEGER NOT NULL)",
+            // Every command owed to the daemon, whether it is attached or
+            // not. The command stream is a cursor over this table; a row is
+            // deleted the moment the daemon acknowledges past it, so the
+            // table is a delivery log rather than a transcript — what a
+            // command *was* is in `events` where it matters.
+            "CREATE TABLE IF NOT EXISTS daemon_commands (\
+                 seq     INTEGER PRIMARY KEY AUTOINCREMENT, \
+                 json    TEXT    NOT NULL, \
+                 at_unix INTEGER NOT NULL)",
+            // Exactly one row, because a room has exactly one daemon. The
+            // epoch names the current attach; `live_until` is the deadline its
+            // contact renews; `gone_reported` is what makes the first caller
+            // past that deadline the only one to announce it. The CHECK is
+            // what makes one row structural rather than a convention.
+            "CREATE TABLE IF NOT EXISTS daemon_presence (\
+                 id            INTEGER PRIMARY KEY CHECK (id = 0), \
+                 epoch         INTEGER NOT NULL, \
+                 live_until    INTEGER NOT NULL, \
+                 gone_reported INTEGER NOT NULL)",
+            // One row per attach, recording how far into that epoch's frame
+            // numbering the room has stored. A retransmitted batch is answered
+            // from this without reapplying a frame of it; a gap is refused.
+            "CREATE TABLE IF NOT EXISTS daemon_frames (\
+                 epoch   INTEGER PRIMARY KEY, \
+                 through INTEGER NOT NULL)",
+            // The size the client's terminal pane last reported, handed to
+            // every daemon's fresh command stream: a daemon that was still
+            // booting when the pane opened, or one restarted by a resize, has
+            // a PTY at its default size and no other way to learn the real
+            // one (issue #258). One row, because a session has one pane
+            // size — the last client to fit its pane wins.
+            "CREATE TABLE IF NOT EXISTS terminal_size (\
+                 id   INTEGER PRIMARY KEY CHECK (id = 0), \
+                 cols INTEGER NOT NULL, \
+                 rows INTEGER NOT NULL)",
+            // One row per answered question about the checkout, keyed by the
+            // id the Worker minted for it and deleted the moment that Worker
+            // collects it. A table rather than KV because these expire: the
+            // sweep in `store_workdir_reply` needs to find rows by age, which
+            // is a query and not a key.
+            "CREATE TABLE IF NOT EXISTS workdir_replies (\
+                 id      TEXT    PRIMARY KEY, \
+                 json    TEXT    NOT NULL, \
+                 at_unix INTEGER NOT NULL)",
+            // The TTL sweep in `store_workdir_reply` deletes by `at_unix`;
+            // without this index every store scans the whole table.
+            "CREATE INDEX IF NOT EXISTS workdir_replies_at ON workdir_replies (at_unix)",
+            // The room's row-read ledger — one row per UTC day, debited by
+            // `row_budget::charge_reads`, and the circuit breaker that keeps a
+            // runaway reader here from spending the account's quota.
+            crate::row_budget::SCHEMA,
+        ],
+    )
+    .await
 }
 
 /// The room's own database failed, which is a runtime fault rather than
@@ -1483,5 +1471,10 @@ async fn collect(
 }
 
 fn room_failed(error: &impl core::fmt::Display) -> ApiError {
+    // The problem document reports a generic `session-room-unavailable`
+    // for good reason — the inner text can name storage internals — but a
+    // refusal nobody can see is a refusal nobody can fix, so the error is
+    // logged here rather than only carried to the caller.
+    tracing::warn!(%error, "a room call failed");
     ApiError::Room(error.to_string())
 }
