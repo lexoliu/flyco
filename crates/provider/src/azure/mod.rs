@@ -520,6 +520,26 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         self.await_operation(response).await.map(drop)
     }
 
+    /// Deletes a resource and waits for the deletion, or answers early when
+    /// it was already gone.
+    ///
+    /// Delete is the one operation whose refusal can mean success: a machine
+    /// being destroyed may have lost resources already — an execution that
+    /// expired, a disk an earlier destroy attempt removed — and asking again
+    /// for what is not there is the end state, not an error.
+    async fn delete_and_await(&mut self, url: String) -> Result<(), ProviderError> {
+        let response = self
+            .send(HttpRequest::new(Method::Delete, url))
+            .await?;
+        if gone(&response) {
+            return Ok(());
+        }
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+        self.await_operation(response).await.map(drop)
+    }
+
     /// Follows an asynchronous operation to a terminal state, answering
     /// with the response that describes the **resource**, where one does.
     ///
@@ -1341,8 +1361,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
     /// of order fails on a resource that is still referenced.
     async fn destroy_vm(&mut self, machine: &Machine) -> Result<(), ProviderError> {
         let id = machine.id;
-        self.send_and_await(HttpRequest::new(Method::Delete, self.machine_url(id)))
-            .await?;
+        self.delete_and_await(self.machine_url(id)).await?;
 
         for (provider_path, name, version) in [
             (
@@ -1362,8 +1381,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             ),
         ] {
             let url = self.resource_url(provider_path, &name, version);
-            self.send_and_await(HttpRequest::new(Method::Delete, url))
-                .await?;
+            self.delete_and_await(url).await?;
         }
 
         tracing::info!(machine = %id, "destroyed an Azure machine and its resources");
@@ -1575,6 +1593,11 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
                 self.job_action_url(&format!("{job}/executions")),
             ))
             .await?;
+        // A job that is already gone runs nothing: the list a destroy stops
+        // over is empty.
+        if gone(&response) {
+            return Ok(Vec::new());
+        }
         if !response.is_success() {
             return Err(refusal(&response));
         }
@@ -1698,14 +1721,25 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
         &mut self,
         execution: &containers::Execution<'_>,
     ) -> Result<(), ProviderError> {
-        self.send_and_await(HttpRequest::new(
-            Method::Post,
-            self.job_action_url(&format!(
-                "{}/executions/{}/stop",
-                execution.job, execution.name
-            )),
-        ))
-        .await
+        let response = self
+            .send(HttpRequest::new(
+                Method::Post,
+                self.job_action_url(&format!(
+                    "{}/executions/{}/stop",
+                    execution.job, execution.name
+                )),
+            ))
+            .await?;
+        // An execution that is already gone has already stopped — Container
+        // Apps answers that with its own 400 "not found" rather than ARM's
+        // 404, and either is the state a stop was asking for.
+        if gone(&response) {
+            return Ok(());
+        }
+        if !response.is_success() {
+            return Err(refusal(&response));
+        }
+        self.await_operation(response).await.map(drop)
     }
 
     /// The one gate a container passes, and the size it asked for.
@@ -1984,8 +2018,7 @@ impl<T: HttpTransport, C: MonotonicClock, K: Timer> AzureProvider<T, C, K> {
             }
         };
 
-        self.send_and_await(HttpRequest::new(Method::Delete, self.job_url(&job)))
-            .await?;
+        self.delete_and_await(self.job_url(&job)).await?;
 
         tracing::info!(machine = %machine.id, "destroyed an Azure Container Apps job");
         Ok(())
@@ -2220,6 +2253,18 @@ fn container_entry(
 fn job_busy(response: &HttpResponse) -> bool {
     response.status == 409
         && ErrorBody::of(response).is_some_and(|error| error.code == JOB_BUSY_CODE)
+}
+
+/// Whether a refused response means the resource it named no longer exists.
+///
+/// ARM's own answer is a 404. The Container Apps job endpoints answer a
+/// 400 instead, with a body that says the execution was "not found" in
+/// prose rather than in an error code — so both shapes are read. A destroy
+/// or stop that meets either is already done: the machine it was sent to
+/// remove is gone, which is the state the caller was asking for.
+fn gone(response: &HttpResponse) -> bool {
+    response.status == 404
+        || (response.status == 400 && response.body_text().contains("not found"))
 }
 
 /// Turns a refused response into an error that keeps its code.

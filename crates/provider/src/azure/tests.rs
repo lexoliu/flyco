@@ -2267,6 +2267,27 @@ async fn destroying_a_stopped_container_deletes_the_job_without_stopping_anythin
     assert_eq!(transport.request(1).method, Method::Delete);
 }
 
+#[tokio::test]
+async fn destroying_a_container_that_is_already_gone_succeeds() {
+    // Azure expires stopped job executions on its own clock, and the stop
+    // endpoint reports that with a 400 whose body says "not found" rather
+    // than ARM's 404. A destroy that meets either answer is already done.
+    let machine = provisioned_container(MachineId::generate());
+    let mut azure = provider(vec![
+        token(),
+        json(
+            400,
+            r#"{"error":"Requested job execution flyco-container-run-xk29p not found","success":false}"#,
+        ),
+        json(404, r#"{"error":{"code":"ResourceNotFound","message":"job not found"}}"#),
+    ]);
+
+    azure.destroy(&machine).await.expect("destroy");
+
+    let transport = azure.transport();
+    assert_eq!(transport.request_count(), 3);
+}
+
 // ── The catalog ──
 
 fn one_region() -> Workspace {
