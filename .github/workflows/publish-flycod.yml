@@ -45,6 +45,13 @@ jobs:
   publish:
     name: Cross-compile and publish
     runs-on: ubuntu-latest
+    # A job-level block replaces the workflow-level one, so the two
+    # permissions above are restated beside the attestation pair.
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       # The session image is built for both Linux architectures and pushed
@@ -81,3 +88,17 @@ jobs:
           --channel ${{ inputs.channel }}
           ${{ inputs.dry_run && '--dry-run' || '' }}
           ${{ inputs.allow_wire_mismatch && '--allow-wire-mismatch' || '' }}
+      # The xtask builds, stages and uploads in one command, so the
+      # attestation follows it; it covers the staged bytes the upload sent.
+      - name: Attest the published objects
+        if: ${{ !inputs.dry_run }}
+        uses: actions/attest@v4
+        with:
+          subject-path: |
+            target/flycod-release/${{ inputs.channel }}/flycod-linux-x86_64
+            target/flycod-release/${{ inputs.channel }}/flycod-linux-x86_64.sha256
+            target/flycod-release/${{ inputs.channel }}/flycod-linux-aarch64
+            target/flycod-release/${{ inputs.channel }}/flycod-linux-aarch64.sha256
+            target/flycod-release/${{ inputs.channel }}/flycod.service
+            target/flycod-release/${{ inputs.channel }}/flycod-host.service
+            target/flycod-release/${{ inputs.channel }}/flycod.sh
